@@ -506,7 +506,7 @@ static int
 update_directory(const char* path, const char* unmount_when_done) {
     ensure_path_mounted(path);
 
-    const char* MENU_HEADERS[] = { "Choose a package to install:",
+    const char* MENU_HEADERS[] = { "选择一个zip文件进行安装:",
                                    path,
                                    "",
                                    NULL };
@@ -643,17 +643,8 @@ wipe_data(int confirm) {
             title_headers = prepend_title((const char**)headers);
         }
 
-        char* items[] = { " No",
-                          " No",
-                          " No",
-                          " No",
-                          " No",
-                          " No",
-                          " No",
-                          " 是 -- 清空所有个人数据",   // [7]
-                          " 否",
-                          " No",
-                          " No",
+        char* items[] = { " 是的 - 清空所有数据",   // [1]
+                          " 取消 - 返回",
                           NULL };
 
         int chosen_item = get_menu_selection(title_headers, items, 1, 0);
