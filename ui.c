@@ -28,20 +28,35 @@
 #include <time.h>
 #include <unistd.h>
 
+
 #include "common.h"
 #include <cutils/android_reboot.h>
 #include <cutils/properties.h>
 #include "minui/minui.h"
 #include "recovery_ui.h"
-#include "ui.h"
 
 extern int __system(const char *command);
 
 #if defined(BOARD_HAS_NO_SELECT_BUTTON) || defined(BOARD_TOUCH_RECOVERY)
 static int gShowBackButton = 1;
 #else
-static int gShowBackButton = 0;
+static int gShowBackButton = 1;
 #endif
+
+#define MAX_COLS 40
+#define MAX_ROWS 32
+
+#define MENU_MAX_COLS 96
+#define MENU_MAX_ROWS 250
+
+#define MIN_LOG_ROWS 3
+
+#define CHAR_WIDTH BOARD_RECOVERY_CHAR_WIDTH
+#define CHAR_HEIGHT BOARD_RECOVERY_CHAR_HEIGHT
+
+#define UI_WAIT_KEY_TIMEOUT_SEC    3600
+#define UI_KEY_REPEAT_INTERVAL 80
+#define UI_KEY_WAIT_REPEAT 400
 
 UIParameters ui_parameters = {
     6,       // indeterminate progress bar frames
@@ -112,6 +127,8 @@ static unsigned long key_last_repeat[KEY_MAX + 1], key_press_time[KEY_MAX + 1];
 static volatile char key_pressed[KEY_MAX + 1];
 
 static void update_screen_locked(void);
+int vibrate(int timeout_ms);
+int get_batt_stats(void);
 
 #ifdef BOARD_TOUCH_RECOVERY
 #include "../../vendor/koush/recovery/touch.c"
@@ -212,10 +229,28 @@ static void draw_progress_locked()
     }
 }
 
-static void draw_text_line(int row, const char* t) {
-  if (t[0] != '\0') {
-    gr_text(0, (row+1)*CHAR_HEIGHT-1, t);
-  }
+#define LEFT_ALIGN 0
+#define CENTER_ALIGN 1
+#define RIGHT_ALIGN 2
+
+static void draw_text_line(int row, const char* t, int align) {
+    int col = 0;
+    if (t[0] != '\0') {
+        int length = strnlen(t, MENU_MAX_COLS) * CHAR_WIDTH * 2;
+        switch(align)
+        {
+            case LEFT_ALIGN:
+                col = 1;
+                break;
+            case CENTER_ALIGN:
+                col = ((gr_fb_width() - length) / 2);
+                break;
+            case RIGHT_ALIGN:
+                col = gr_fb_width() - length - 1;
+                break;
+        }
+        gr_text(col, (row+1)*CHAR_HEIGHT-1, t);
+    }
 }
 
 //#define MENU_TEXT_COLOR 255, 160, 49, 255
@@ -243,12 +278,33 @@ static void draw_screen_locked(void)
         if (show_menu) {
 #ifndef BOARD_TOUCH_RECOVERY
             gr_color(MENU_TEXT_COLOR);
+            int batt_level = 0;
+            batt_level = get_batt_stats();
+            if (batt_level < 20) {
+                gr_color(255, 0, 0, 255);
+            }
+
+            struct tm *current;
+            time_t now;
+	    now = time(NULL) + (3600 * 8); // add 0 hours
+	    current = localtime(&now);
+
+            char batt_text[40];
+            sprintf(batt_text, "[%d%% %02D:%02D]", batt_level, current->tm_hour, current->tm_min);
+
+            if (now == NULL)
+               { // just in case
+	    sprintf(batt_text, "[%d%%]", batt_level);
+			}
+            draw_text_line(0, batt_text, RIGHT_ALIGN);
+            vibrate(50); //增加虚拟键震动
+            gr_color(MENU_TEXT_COLOR);
             gr_fill(0, (menu_top + menu_sel - menu_show_start) * CHAR_HEIGHT,
                     gr_fb_width(), (menu_top + menu_sel - menu_show_start + 1)*CHAR_HEIGHT+1);
 
             gr_color(HEADER_TEXT_COLOR);
             for (i = 0; i < menu_top; ++i) {
-                draw_text_line(i, menu[i]);
+                draw_text_line(i, menu[i], LEFT_ALIGN);
                 row++;
             }
 
@@ -261,11 +317,11 @@ static void draw_screen_locked(void)
             for (i = menu_show_start + menu_top; i < (menu_show_start + menu_top + j); ++i) {
                 if (i == menu_top + menu_sel) {
                     gr_color(255, 255, 255, 255);
-                    draw_text_line(i - menu_show_start , menu[i]);
+                    draw_text_line(i - menu_show_start , menu[i], LEFT_ALIGN);
                     gr_color(MENU_TEXT_COLOR);
                 } else {
                     gr_color(MENU_TEXT_COLOR);
-                    draw_text_line(i - menu_show_start, menu[i]);
+                    draw_text_line(i - menu_show_start, menu[i], LEFT_ALIGN);
                 }
                 row++;
                 if (row >= max_menu_rows)
@@ -290,7 +346,7 @@ static void draw_screen_locked(void)
 
         int r;
         for (r = 0; r < (available_rows < MAX_ROWS ? available_rows : MAX_ROWS); r++) {
-            draw_text_line(start_row + r, text[(cur_row + r) % MAX_ROWS]);
+            draw_text_line(start_row + r, text[(cur_row + r) % MAX_ROWS], LEFT_ALIGN);
         }
     }
 }
@@ -487,7 +543,8 @@ void ui_init(void)
     if (text_rows > MAX_ROWS) text_rows = MAX_ROWS;
     text_top = 1;
 
-    text_cols = gr_fb_width() / CHAR_WIDTH;
+    text_cols = gr_fb_width() / CHAR_WIDTH * 2;
+    //768/40=19 
     if (text_cols > MAX_COLS - 1) text_cols = MAX_COLS - 1;
 
     int i;
@@ -663,11 +720,8 @@ void ui_print(const char *fmt, ...)
 {
     char buf[256];
     va_list ap;
-    char *locale_fmt = "";
-
-    locale_fmt = ui_translate(fmt);
-    va_start(ap, locale_fmt);
-    vsnprintf(buf, 256, locale_fmt, ap);
+    va_start(ap, fmt);
+    vsnprintf(buf, 256, fmt, ap);
     va_end(ap);
 
     if (ui_log_stdout)
@@ -737,19 +791,19 @@ int ui_start_menu(char** headers, char** items, int initial_selection) {
     if (text_rows > 0 && text_cols > 0) {
         for (i = 0; i < text_rows; ++i) {
             if (headers[i] == NULL) break;
-            strncpy(menu[i], ui_translate(headers[i]), text_cols-1);
+            strncpy(menu[i], headers[i], text_cols-1);
             menu[i][text_cols-1] = '\0';
         }
         menu_top = i;
         for (; i < MENU_MAX_ROWS; ++i) {
             if (items[i-menu_top] == NULL) break;
             strcpy(menu[i], MENU_ITEM_HEADER);
-            strncpy(menu[i] + MENU_ITEM_HEADER_LENGTH, ui_translate(items[i-menu_top]), MENU_MAX_COLS - 1 - MENU_ITEM_HEADER_LENGTH);
+            strncpy(menu[i] + MENU_ITEM_HEADER_LENGTH, items[i-menu_top], MENU_MAX_COLS - 1 - MENU_ITEM_HEADER_LENGTH);
             menu[i][MENU_MAX_COLS-1] = '\0';
         }
 
         if (gShowBackButton && !ui_root_menu) {
-            strcpy(menu[i], ui_translate(" - +++++Go Back+++++"));
+            strcpy(menu[i], " - +++++返回+++++");
             ++i;
         }
 
@@ -1032,3 +1086,50 @@ void ui_increment_frame() {
     gInstallingFrame =
         (gInstallingFrame + 1) % ui_parameters.installing_frames;
 }
+//电量显示，每隔30秒更新一次
+int get_batt_stats(void) {
+    static int level = -1;
+    static time_t nextCheck = 0;
+    struct timeval currentTime;
+    gettimeofday(&currentTime, NULL);
+
+    if (currentTime.tv_sec > nextCheck) {
+        char value[4];
+        FILE * capacity = fopen("/sys/class/power_supply/battery/capacity","rt");
+        if (capacity) {
+            fgets(value, 4, capacity);
+            fclose(capacity);
+            level = atoi(value);
+
+            if (level > 100)
+                level = 100;
+            if (level < 0)
+                level = 0;
+        }
+        nextCheck = currentTime.tv_sec + 30;
+    }
+    return level;
+}
+//电量显示，每隔30秒更新一次
+
+//虚拟按键震动
+int vibrate(int timeout_ms)
+{
+    char str[20];
+    int fd;
+    int ret;
+
+    fd = open("/sys/class/timed_output/vibrator/enable", O_WRONLY);
+    if (fd < 0)
+        return -1;
+
+    ret = snprintf(str, sizeof(str), "%d", timeout_ms);
+    ret = write(fd, str, ret);
+    close(fd);
+
+    if (ret < 0)
+       return -1;
+
+    return 0;
+}
+//虚拟按键震动

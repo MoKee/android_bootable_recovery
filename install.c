@@ -114,10 +114,8 @@ try_update_binary(const char *path, ZipArchive *zip) {
         const ZipEntry* update_script_entry =
                 mzFindZipEntry(zip, ASSUMED_UPDATE_SCRIPT_NAME);
         if (update_script_entry != NULL) {
-            ui_print("Amend scripting (update-script) is no longer supported.\n");
-            ui_print("Amend scripting was deprecated by Google in Android 1.5.\n");
-            ui_print("It was necessary to remove it when upgrading to the ClockworkMod 3.0 Gingerbread based recovery.\n");
-            ui_print("Please switch to Edify scripting (updater-script and update-binary) to create working update zip packages.\n");
+            ui_print("Amend 脚本 (update-script) 已经不再支持.\n");
+            ui_print("请切换到 Edify 脚本 (updater-script and update-binary) \n");
             return INSTALL_UPDATE_BINARY_MISSING;
         }
 
@@ -358,7 +356,7 @@ static int
 really_install_package(const char *path)
 {
     ui_set_background(BACKGROUND_ICON_INSTALLING);
-    ui_print("Finding update package...\n");
+    ui_print("正在查找刷机包...\n");
     ui_show_indeterminate_progress();
     LOGI("Update location: %s\n", path);
 
@@ -367,7 +365,7 @@ really_install_package(const char *path)
         return INSTALL_CORRUPT;
     }
 
-    ui_print("Opening update package...\n");
+    ui_print("正在打开刷机包...\n");
 
     int err;
 
@@ -381,7 +379,7 @@ really_install_package(const char *path)
         LOGI("%d key(s) loaded from %s\n", numKeys, PUBLIC_KEYS_FILE);
 
         // Give verification half the progress bar...
-        ui_print("Verifying update package...\n");
+        ui_print("正在校验刷机包签名...\n");
         ui_show_progress(
                 VERIFICATION_PROGRESS_FRACTION,
                 VERIFICATION_PROGRESS_TIME);
@@ -392,7 +390,7 @@ really_install_package(const char *path)
         if (err != VERIFY_SUCCESS) {
             LOGE("signature verification failed\n");
             ui_show_text(1);
-            if (!confirm_selection("Install Untrusted Package?", "Yes - Install untrusted zip"))
+            if (!confirm_selection("安装未签名刷机包?", "是 - 安装未签名刷机包"))
                 return INSTALL_CORRUPT;
         }
     }
@@ -408,7 +406,7 @@ really_install_package(const char *path)
 
     /* Verify and install the contents of the package.
      */
-    ui_print("Installing update...\n");
+    ui_print("正在刷入刷机包...\n");
     return try_update_binary(path, &zip);
 }
 

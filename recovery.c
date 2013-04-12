@@ -56,16 +56,13 @@ static const struct option OPTIONS[] = {
   { "wipe_data", no_argument, NULL, 'w' },
   { "wipe_cache", no_argument, NULL, 'c' },
   { "show_text", no_argument, NULL, 't' },
-  { "locale", required_argument, NULL, 'l' },
+  { "sideload", no_argument, NULL, 'l' },
   { NULL, 0, NULL, 0 },
 };
-
-char* locale = NULL;
 
 static const char *COMMAND_FILE = "/cache/recovery/command";
 static const char *INTENT_FILE = "/cache/recovery/intent";
 static const char *LOG_FILE = "/cache/recovery/log";
-static const char *LOCALE_FILE = "/cache/recovery/last_locale";
 static const char *LAST_LOG_FILE = "/cache/recovery/last_log";
 static const char *CACHE_ROOT = "/cache";
 static const char *SDCARD_ROOT = "/sdcard";
@@ -287,21 +284,6 @@ finish_recovery(const char *send_intent) {
         }
     }
 
-    // Save the locale to cache, so if recovery is next started up
-    // without a --locale argument (eg, directly from the bootloader)
-    // it will use the last-known locale.
-    locale = ui_get_locale();
-
-    if (locale != NULL) {
-        LOGI("Saving locale \"%s\"\n", locale);
-        FILE* fp = fopen_path(LOCALE_FILE, "w");
-        fwrite(locale, 1, strlen(locale), fp);
-        fflush(fp);
-        fsync(fileno(fp));
-        check_and_fclose(fp, LOCALE_FILE);
-    }
-
-
     // Copy logs to cache so the system can find out what happened.
     copy_log_file(LOG_FILE, true);
     copy_log_file(LAST_LOG_FILE, false);
@@ -325,7 +307,7 @@ static int
 erase_volume(const char *volume) {
     ui_set_background(BACKGROUND_ICON_INSTALLING);
     ui_show_indeterminate_progress();
-    ui_print("Formatting %s...\n", volume);
+    ui_print("正在格式化 %s...\n", volume);
 
     if (strcmp(volume, "/cache") == 0) {
         // Any part of the log we'd copied to cache is now gone.
@@ -620,7 +602,7 @@ update_directory(const char* path, const char* unmount_when_done) {
             strlcat(new_path, "/", PATH_MAX);
             strlcat(new_path, item, PATH_MAX);
 
-            ui_print("\n-- Install %s ...\n", path);
+            ui_print("\n-- 安装 %s ...\n", path);
             set_sdcard_update_bootloader_message();
             char* copy = copy_sideloaded_package(new_path);
             if (unmount_when_done != NULL) {
@@ -653,8 +635,9 @@ wipe_data(int confirm) {
         static char** title_headers = NULL;
 
         if (title_headers == NULL) {
-            char* headers[] = { "Confirm wipe of all user data?",
-                                "  THIS CAN NOT BE UNDONE.",
+            char* headers[] = { "确认清空DATA分区?",
+                                "该操作将会删除您设备内的个人数据",
+                                "注意！该操作无法撤销.",
                                 "",
                                 NULL };
             title_headers = prepend_title((const char**)headers);
@@ -667,19 +650,19 @@ wipe_data(int confirm) {
                           " No",
                           " No",
                           " No",
-                          " Yes -- delete all user data",   // [7]
-                          " No",
+                          " 是 -- 清空所有个人数据",   // [7]
+                          " 否",
                           " No",
                           " No",
                           NULL };
 
         int chosen_item = get_menu_selection(title_headers, items, 1, 0);
-        if (chosen_item != 7) {
+        if (chosen_item != 0) {
             return;
         }
     }
 
-    ui_print("\n-- Wiping data...\n");
+    ui_print("\n-- 正在清空DATA分区...\n");
     device_wipe_data();
     erase_volume("/data");
     erase_volume("/cache");
@@ -688,7 +671,7 @@ wipe_data(int confirm) {
     }
     erase_volume("/sd-ext");
     erase_volume("/sdcard/.android_secure");
-    ui_print("Data wipe complete.\n");
+    ui_print("DATA分区已清空.\n");
 }
 
 int ui_menu_level = 1;
@@ -727,11 +710,11 @@ prompt_and_wait() {
                 break;
 
             case ITEM_WIPE_CACHE:
-                if (confirm_selection("Confirm wipe?", "Yes - Wipe Cache"))
+                if (confirm_selection("确认清空?", "是 - 清空CACHE分区"))
                 {
-                    ui_print("\n-- Wiping cache...\n");
+                    ui_print("\n-- 正在清空CACHE分区...\n");
                     erase_volume("/cache");
-                    ui_print("Cache wipe complete.\n");
+                    ui_print("CACHE分区已清空.\n");
                     if (!ui_text_visible()) return;
                 }
                 break;
@@ -760,25 +743,6 @@ prompt_and_wait() {
                 poweroff = 1;
                 return;
         }
-    }
-}
-
-static void
-load_locale_from_cache() {
-    FILE* fp = fopen_path(LOCALE_FILE, "r");
-    char buffer[80];
-    if (fp != NULL) {
-        fgets(buffer, sizeof(buffer), fp);
-        int j = 0;
-        unsigned int i;
-        for (i = 0; i < sizeof(buffer) && buffer[i]; ++i) {
-            if (!isspace(buffer[i])) {
-                buffer[j++] = buffer[i];
-            }
-        }
-        buffer[j] = 0;
-        locale = strdup(buffer);
-        check_and_fclose(fp, LOCALE_FILE);
     }
 }
 
@@ -892,6 +856,7 @@ main(int argc, char **argv) {
     const char *send_intent = NULL;
     const char *update_package = NULL;
     int wipe_data = 0, wipe_cache = 0;
+    int sideload = 0;
 
     LOGI("Checking arguments.\n");
     int arg;
@@ -907,17 +872,12 @@ main(int argc, char **argv) {
         break;
         case 'c': wipe_cache = 1; break;
         case 't': ui_show_text(1); break;
-        case 'l': locale = optarg; break;
+        case 'l': sideload = 1; break;
         case '?':
             LOGE("Invalid command argument\n");
             continue;
         }
     }
-
-    if (locale == NULL)
-        load_locale_from_cache();
-
-    ui_set_locale(locale);
 
     struct selinux_opt seopts[] = {
       { SELABEL_OPT_PATH, "/file_contexts" }
@@ -962,16 +922,23 @@ main(int argc, char **argv) {
 
     if (update_package != NULL) {
         status = install_package(update_package);
-        if (status != INSTALL_SUCCESS) ui_print("Installation aborted.\n");
+        if (status != INSTALL_SUCCESS) ui_print("安装已取消.\n");
     } else if (wipe_data) {
         if (device_wipe_data()) status = INSTALL_ERROR;
         if (erase_volume("/data")) status = INSTALL_ERROR;
         if (has_datadata() && erase_volume("/datadata")) status = INSTALL_ERROR;
         if (wipe_cache && erase_volume("/cache")) status = INSTALL_ERROR;
-        if (status != INSTALL_SUCCESS) ui_print("Data wipe failed.\n");
+        if (status != INSTALL_SUCCESS) ui_print("DATA分区清空失败.\n");
     } else if (wipe_cache) {
         if (wipe_cache && erase_volume("/cache")) status = INSTALL_ERROR;
-        if (status != INSTALL_SUCCESS) ui_print("Cache wipe failed.\n");
+        if (status != INSTALL_SUCCESS) ui_print("CACHE分区清空失败.\n");
+    } else if (sideload) {
+        signature_check_enabled = 0;
+        ui_set_show_text(1);
+        if (0 == apply_from_adb()) {
+            status = INSTALL_SUCCESS;
+            ui_set_show_text(0);
+        }
     } else {
         LOGI("Checking for extendedcommand...\n");
         status = INSTALL_ERROR;  // No command specified
@@ -1018,11 +985,11 @@ main(int argc, char **argv) {
 
     sync();
     if(!poweroff) {
-        ui_print("Rebooting...\n");
+        ui_print("正在重启...\n");
         android_reboot(ANDROID_RB_RESTART, 0, 0);
     }
     else {
-        ui_print("Shutting down...\n");
+        ui_print("正在关机...\n");
         android_reboot(ANDROID_RB_POWEROFF, 0, 0);
     }
     return EXIT_SUCCESS;
