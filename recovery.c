@@ -909,7 +909,7 @@ main(int argc, char **argv) {
         break;
         case 'c': wipe_cache = 1; break;
         case 't': ui_show_text(1); break;
-	case 'l': sideload = 1; break;
+        case 'l': sideload = 1; break;
         case 'z': locale = optarg; break;
         case '?':
             LOGE("Invalid command argument\n");
