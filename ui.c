@@ -124,6 +124,9 @@ static int menu_top = 0, menu_items = 0, menu_sel = 0;
 static int menu_show_start = 0;             // this is line which menu display is starting at
 static int max_menu_rows;
 
+static int cur_rainbow_color = 0;
+static int gRainbowMode = 0;
+
 // Key event input queue
 static pthread_mutex_t key_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t key_queue_cond = PTHREAD_COND_INITIALIZER;
@@ -135,6 +138,10 @@ static void update_screen_locked(void);
 
 #ifdef BOARD_TOUCH_RECOVERY
 #include "../../vendor/koush/recovery/touch.c"
+#else
+#ifdef BOARD_RECOVERY_SWIPE
+#include "swipe.c"
+#endif
 #endif
 
 // Return the current time as a double (including fractions of a second).
@@ -248,8 +255,8 @@ static void draw_text_line(int row, const char* t, int align) {
                 col = gr_fb_width() - length - 1;
                 break;
         }
-
-     gr_text(col, (row+1)*CHAR_HEIGHT-1, t);
+        if (ui_get_rainbow_mode()) ui_rainbow_mode();
+        gr_text(col, (row+1)*CHAR_HEIGHT-1, t);
     }
 }
 
@@ -417,27 +424,6 @@ static void *progress_thread(void *cookie)
 
 static int rel_sum = 0;
 
-static int in_touch = 0; //1 = in a touch
-static int slide_right = 0;
-static int slide_left = 0;
-static int touch_x = 0;
-static int touch_y = 0;
-static int old_x = 0;
-static int old_y = 0;
-static int diff_x = 0;
-static int diff_y = 0;
-
-static void reset_gestures() {
-    diff_x = 0;
-    diff_y = 0;
-    old_x = 0;
-    old_y = 0;
-    touch_x = 0;
-    touch_y = 0;
-}
-
-static const char * const absval[6] = { "Value", "Min  ", "Max  ", "Fuzz ", "Flat ", "Resolution "};
-
 static int input_callback(int fd, short revents, void *data)
 {
     struct input_event ev;
@@ -450,7 +436,11 @@ static int input_callback(int fd, short revents, void *data)
 
 #ifdef BOARD_TOUCH_RECOVERY
     if (touch_handle_input(fd, ev))
-      return 0;
+        return 0;
+#else
+#ifdef BOARD_RECOVERY_SWIPE
+    swipe_handle_input(fd, &ev);
+#endif
 #endif
 
     if (ev.type == EV_SYN) {
@@ -479,66 +469,6 @@ static int input_callback(int fd, short revents, void *data)
     } else {
         rel_sum = 0;
     }
-
-    int abs[6] = {0};
-    int k;
-
-    ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), abs);
-    int max_x_touch = abs[2];
-
-    ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), abs);
-    int max_y_touch = abs[2];
-
-    //start touch code
-    if(ev.type == EV_ABS && ev.code == ABS_MT_TRACKING_ID) {
-        if(in_touch == 0) {
-            in_touch = 1; //starting to track touch...
-            reset_gestures();
-        } else {
-            //finger lifted! lets run with this
-            ev.type = EV_KEY; //touch panel support!!!
-            int keywidth = gr_fb_width() / 4;
-            if(slide_right == 1) {
-                ev.code = KEY_POWER;
-                slide_right = 0;
-            } else if(slide_left == 1) {
-                ev.code = KEY_BACK;
-                slide_left = 0;
-            }
-
-            ev.value = 1;
-            in_touch = 0;
-            reset_gestures();
-        }
-    } else if(ev.type == EV_ABS && ev.code == ABS_MT_POSITION_X) {
-        old_x = touch_x;
-        float touch_x_rel = (float)ev.value / (float)max_x_touch;
-        touch_x = touch_x_rel * gr_fb_width();
-        if(old_x != 0) diff_x += touch_x - old_x;
-            if(diff_x > 100) {
-                slide_right = 1;
-                reset_gestures();
-            } else if(diff_x < -100) {
-                slide_left = 1;
-                reset_gestures();
-            }
-    } else if(ev.type == EV_ABS && ev.code == ABS_MT_POSITION_Y) {
-        old_y = touch_y;
-        float touch_y_rel = (float)ev.value / (float)max_y_touch;
-        touch_y = touch_y_rel * gr_fb_height();
-        if(old_y != 0) diff_y += touch_y - old_y;
-            if(diff_y > 80) {
-                ev.code = KEY_VOLUMEDOWN;
-                ev.type = EV_KEY;
-                reset_gestures();
-            } else if(diff_y < -80) {
-                ev.code = KEY_VOLUMEUP;
-                ev.type = EV_KEY;
-                reset_gestures();
-            }
-    }
-
-    //end touch code
 
     if (ev.type != EV_KEY || ev.code > KEY_MAX)
         return 0;
@@ -579,8 +509,7 @@ static int input_callback(int fd, short revents, void *data)
     }
 
     if (ev.value > 0 && device_reboot_now(key_pressed, ev.code)) {
-        vold_unmount_all();
-        android_reboot(ANDROID_RB_RESTART, 0, 0);
+        reboot_main_system(ANDROID_RB_RESTART, 0, 0);
     }
 
     return 0;
@@ -690,12 +619,6 @@ void ui_init(void)
     pthread_t t;
     pthread_create(&t, NULL, progress_thread, NULL);
     pthread_create(&t, NULL, input_thread, NULL);
-
-    ui_print("You can use gestures in this recovery.\n");
-    ui_print("Swipe up and down to change selections.\n");
-    ui_print("Swipe to the right -> for enter.\n");
-    ui_print("Swipe to the left <- for back.\n");
-}
 
 char *ui_copy_image(int icon, int *width, int *height, int *bpp) {
     pthread_mutex_lock(&gUpdateMutex);
@@ -987,13 +910,15 @@ void ui_cancel_wait_key() {
 
 extern int volumes_changed();
 
+// delay in seconds to refresh clock and USB plugged volumes
+#define REFRESH_TIME_USB_INTERVAL 5
 int ui_wait_key()
 {
     if (boardEnableKeyRepeat) return ui_wait_key_with_repeat();
     pthread_mutex_lock(&key_queue_mutex);
     int timeouts = UI_WAIT_KEY_TIMEOUT_SEC;
 
-    // Time out after 1 second to catch volume changes, and loop for
+    // Time out after REFRESH_TIME_USB_INTERVAL seconds to catch volume changes, and loop for
     // UI_WAIT_KEY_TIMEOUT_SEC to restart a device not connected to USB
     do {
         struct timeval now;
@@ -1001,7 +926,7 @@ int ui_wait_key()
         gettimeofday(&now, NULL);
         timeout.tv_sec = now.tv_sec;
         timeout.tv_nsec = now.tv_usec * 1000;
-        timeout.tv_sec += 1;
+        timeout.tv_sec += REFRESH_TIME_USB_INTERVAL;
 
         int rc = 0;
         while (key_queue_len == 0 && rc != ETIMEDOUT) {
@@ -1012,8 +937,8 @@ int ui_wait_key()
                 return REFRESH;
             }
         }
-        timeouts--;
-    } while ((timeouts || usb_connected()) && key_queue_len == 0);
+        timeouts -= REFRESH_TIME_USB_INTERVAL;
+    } while ((timeouts > 0 || usb_connected()) && key_queue_len == 0);
 
     int key = -1;
     if (key_queue_len > 0) {
@@ -1043,21 +968,31 @@ int ui_wait_key_with_repeat()
 
     // Loop to wait for more keys.
     do {
+        int timeouts = UI_WAIT_KEY_TIMEOUT_SEC;
+        int rc = 0;
         struct timeval now;
         struct timespec timeout;
-        gettimeofday(&now, NULL);
-        timeout.tv_sec = now.tv_sec;
-        timeout.tv_nsec = now.tv_usec * 1000;
-        timeout.tv_sec += UI_WAIT_KEY_TIMEOUT_SEC;
-
-        int rc = 0;
         pthread_mutex_lock(&key_queue_mutex);
-        while (key_queue_len == 0 && rc != ETIMEDOUT) {
-            rc = pthread_cond_timedwait(&key_queue_cond, &key_queue_mutex,
-                                        &timeout);
+        while (key_queue_len == 0 && timeouts > 0) {
+            gettimeofday(&now, NULL);
+            timeout.tv_sec = now.tv_sec;
+            timeout.tv_nsec = now.tv_usec * 1000;
+            timeout.tv_sec += REFRESH_TIME_USB_INTERVAL;
+
+            rc = 0;
+            while (key_queue_len == 0 && rc != ETIMEDOUT) {
+                rc = pthread_cond_timedwait(&key_queue_cond, &key_queue_mutex,
+                                            &timeout);
+                if (volumes_changed()) {
+                    pthread_mutex_unlock(&key_queue_mutex);
+                    return REFRESH;
+                }
+            }
+            timeouts -= REFRESH_TIME_USB_INTERVAL;
         }
         pthread_mutex_unlock(&key_queue_mutex);
-        if (rc == ETIMEDOUT && !usb_connected() && !volumes_changed()) {
+
+        if (rc == ETIMEDOUT && !usb_connected()) {
             return -1;
         }
 
@@ -1200,3 +1135,29 @@ int get_batt_stats() {
         level = 0;
     return level;
 }
+
+int ui_get_rainbow_mode() {
+    return gRainbowMode;
+}
+
+void ui_rainbow_mode() {
+    static int colors[] = { 255, 0, 0,        // red
+                            255, 127, 0,      // orange
+                            255, 255, 0,      // yellow
+                            0, 255, 0,        // green
+                            60, 80, 255,      // blue
+                            143, 0, 255 };    // violet
+
+    gr_color(colors[cur_rainbow_color], colors[cur_rainbow_color+1], colors[cur_rainbow_color+2], 255);
+    cur_rainbow_color += 3;
+    if (cur_rainbow_color >= sizeof(colors)/sizeof(colors[0])) cur_rainbow_color = 0;
+}
+
+void ui_set_rainbow_mode(int rainbowMode) {
+    gRainbowMode = rainbowMode;
+
+    pthread_mutex_lock(&gUpdateMutex);
+    update_screen_locked();
+    pthread_mutex_unlock(&gUpdateMutex);
+}
+
