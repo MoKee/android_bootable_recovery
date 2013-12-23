@@ -32,6 +32,7 @@
 #include "recovery_ui.h"
 
 #include "extendedcommands.h"
+#include "recovery_settings.h"
 #include "nandroid.h"
 #include "mounts.h"
 #include "flashutils/flashutils.h"
@@ -45,14 +46,7 @@
 
 #include "adb_install.h"
 
-#ifdef ENABLE_LOKI
-#include "compact_loki.h"
-#endif
-
 int signature_check_enabled = 1;
-#ifdef ENABLE_LOKI
-int loki_support_enabled = 1;
-#endif
 int script_assert_enabled = 1;
 
 int
@@ -97,7 +91,7 @@ void write_string_to_file(const char* filename, const char* string) {
 
 void write_recovery_version() {
     char path[PATH_MAX];
-    sprintf(path, "%s%sclockworkmod/.recovery_version", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"));
+    sprintf(path, "%s%s%s", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"), RECOVERY_VERSION_FILE);
     write_string_to_file(path,EXPAND(RECOVERY_VERSION) "\n" EXPAND(TARGET_DEVICE));
     // force unmount /data on /data/media devices as we call this on recovery start
     ignore_data_media_workaround(1);
@@ -107,13 +101,13 @@ void write_recovery_version() {
 
 static void write_last_install_path(const char* install_path) {
     char path[PATH_MAX];
-    sprintf(path, "%s%sclockworkmod/.last_install_path", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"));
+    sprintf(path, "%s%s%s", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"), RECOVERY_LAST_INSTALL_FILE);
     write_string_to_file(path, install_path);
 }
 
 const char* read_last_install_path() {
     char path[PATH_MAX];
-    sprintf(path, "%s%sclockworkmod/.last_install_path", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"));
+    sprintf(path, "%s%s%s", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"), RECOVERY_LAST_INSTALL_FILE);
 
     ensure_path_mounted(path);
     FILE *f = fopen(path, "r");
@@ -134,9 +128,8 @@ toggle_signature_check()
 }
 
 #ifdef ENABLE_LOKI
-void
-toggle_loki_support()
-{
+int loki_support_enabled = 1;
+void toggle_loki_support() {
     loki_support_enabled = !loki_support_enabled;
     ui_print("Loki Support: %s\n", loki_support_enabled ? "Enabled" : "Disabled");
 }
@@ -148,6 +141,7 @@ int install_zip(const char* packagefilepath)
     if (device_flash_type() == MTD) {
         set_sdcard_update_bootloader_message();
     }
+
     int status = install_package(packagefilepath);
     ui_reset_progress();
     if (status != INSTALL_SUCCESS) {
@@ -155,14 +149,18 @@ int install_zip(const char* packagefilepath)
         ui_print("Installation aborted.\n");
         return 1;
     }
+
 #ifdef ENABLE_LOKI
-    if(loki_support_enabled) {
-       ui_print("Checking if loki-fying is needed");
-       if (loki_check() != 0) {
-           return 1;
-       }
+    if (loki_support_enabled) {
+        ui_print("Checking if loki-fying is needed");
+        status = loki_check();
+        if (status != INSTALL_SUCCESS) {
+            ui_set_background(BACKGROUND_ICON_ERROR);
+            return 1;
+        }
     }
 #endif
+
     ui_set_background(BACKGROUND_ICON_NONE);
     ui_print("\nInstall from sdcard complete.\n");
     return 0;
@@ -428,20 +426,21 @@ char* choose_file_menu(const char* basedir, const char* fileExtensionOrDirectory
             int chosen_item = get_menu_selection(fixed_headers, list, 0, 0);
             if (chosen_item == GO_BACK || chosen_item == REFRESH)
                 break;
-            static char ret[PATH_MAX];
+            char ret[PATH_MAX];
             if (chosen_item < numDirs)
             {
                 char* subret = choose_file_menu(dirs[chosen_item], fileExtensionOrDirectory, headers);
                 if (subret != NULL)
                 {
                     strcpy(ret, subret);
-                    return_value = ret;
+                    return_value = strdup(ret);
+                    free(subret);
                     break;
                 }
                 continue;
             }
             strcpy(ret, files[chosen_item - numDirs]);
-            return_value = ret;
+            return_value = strdup(ret);
             break;
         }
         free_string_array(list);
@@ -475,6 +474,8 @@ void show_choose_zip_menu(const char *mount_point)
         install_zip(file);
         write_last_install_path(dirname(file));
     }
+    
+    free(file);
 }
 
 void show_nandroid_restore_menu(const char* path)
@@ -497,6 +498,8 @@ void show_nandroid_restore_menu(const char* path)
 
     if (confirm_selection("Confirm restore?", "Yes - Restore"))
         nandroid_restore(file, 1, 1, 1, 1, 1, 1, 0);
+
+    free(file);
 }
 
 void show_nandroid_delete_menu(const char* path)
@@ -522,6 +525,8 @@ void show_nandroid_delete_menu(const char* path)
         sprintf(tmp, "rm -rf %s", file);
         __system(tmp);
     }
+
+    free(file);
 }
 
 static int control_usb_storage(bool on)
@@ -572,15 +577,21 @@ void show_mount_usb_storage_menu()
 
 int confirm_selection(const char* title, const char* confirm)
 {
+    char path[PATH_MAX];
     struct stat info;
     int ret = 0;
-
-    if (0 == stat("/sdcard/clockworkmod/.no_confirm", &info))
+    sprintf(path, "%s%s%s", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"), RECOVERY_NO_CONFIRM_FILE);
+    ensure_path_mounted(path);
+    if (0 == stat(path, &info))
         return 1;
 
+    int many_confirm;
     char* confirm_str = strdup(confirm);
     const char* confirm_headers[]  = {  title, "  THIS CAN NOT BE UNDONE.", "", NULL };
-    int many_confirm = 0 == stat("/sdcard/clockworkmod/.many_confirm", &info);
+    sprintf(path, "%s%s%s", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"), RECOVERY_MANY_CONFIRM_FILE);
+    ensure_path_mounted(path);    
+    many_confirm = 0 == stat(path, &info);
+
     if (many_confirm) {
         char* items[] = { "No",
                         "No",
@@ -615,20 +626,21 @@ extern void reset_ext4fs_info();
 
 extern struct selabel_handle *sehandle;
 int format_device(const char *device, const char *path, const char *fs_type) {
-    Volume* v = volume_for_path(path);
-    if (v == NULL) {
-        // silent failure for sd-ext
-        if (strcmp(path, "/sd-ext") == 0)
-            return -1;
-        LOGE("unknown volume \"%s\"\n", path);
-        return -1;
-    }
     if (is_data_media_volume_path(path)) {
         return format_unknown_device(NULL, path, NULL);
     }
     if (strstr(path, "/data") == path && is_data_media()) {
         return format_unknown_device(NULL, path, NULL);
     }
+
+    Volume* v = volume_for_path(path);
+    if (v == NULL) {
+        // silent failure for sd-ext
+        if (strcmp(path, "/sd-ext") != 0)
+            LOGE("unknown volume '%s'\n", path);
+        return -1;
+    }
+
     if (strcmp(fs_type, "ramdisk") == 0) {
         // you can't format the ramdisk.
         LOGE("can't format_volume \"%s\"", path);
@@ -1048,6 +1060,8 @@ void show_nandroid_advanced_restore_menu(const char* path)
                 nandroid_restore(file, 0, 0, 0, 0, 0, 0, 1);
             break;
     }
+
+    free(file);
 }
 
 static void run_dedupe_gc() {
@@ -1102,18 +1116,20 @@ static void choose_default_backup_format() {
         list = list_tar_default;
     }
 
+    char path[PATH_MAX];
+    sprintf(path, "%s%s%s", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"), NANDROID_BACKUP_FORMAT_FILE);
     int chosen_item = get_menu_selection(headers, list, 0, 0);
     switch (chosen_item) {
         case 0:
-            write_string_to_file(NANDROID_BACKUP_FORMAT_FILE, "tar");
+            write_string_to_file(path, "tar");
             ui_print("Default backup format set to tar.\n");
             break;
         case 1:
-            write_string_to_file(NANDROID_BACKUP_FORMAT_FILE, "dup");
+            write_string_to_file(path, "dup");
             ui_print("Default backup format set to dedupe.\n");
             break;
         case 2:
-            write_string_to_file(NANDROID_BACKUP_FORMAT_FILE, "tgz");
+            write_string_to_file(path, "tgz");
             ui_print("Default backup format set to tar + gzip.\n");
             break;
     }
@@ -1136,6 +1152,12 @@ static void add_nandroid_options_for_volume(char** menu, char* path, int offset)
     menu[offset + 3] = strdup(buf);
 }
 
+// number of actions added for each volume by add_nandroid_options_for_volume()
+// these go on top of menu list
+#define NANDROID_ACTIONS_NUM 4
+// number of fixed bottom entries after volume actions
+#define NANDROID_FIXED_ENTRIES 2
+
 int show_nandroid_menu()
 {
     char* primary_path = get_primary_storage_path();
@@ -1143,98 +1165,109 @@ int show_nandroid_menu()
     int num_extra_volumes = get_num_extra_volumes();
     int i = 0, offset = 0, chosen_item = 0;
     char* chosen_path = NULL;
-    int max_backup_index = (num_extra_volumes + 1) * 4;
+    int action_entries_num = (num_extra_volumes + 1) * NANDROID_ACTIONS_NUM;
 
     static const char* headers[] = {  "Backup and Restore",
                                       "",
                                       NULL
     };
 
-    static char* list[((MAX_NUM_MANAGED_VOLUMES + 1) * 4) + 2];
+    // (MAX_NUM_MANAGED_VOLUMES + 1) for primary_path (/sdcard)
+    // + 1 for extra NULL entry
+    static char* list[((MAX_NUM_MANAGED_VOLUMES + 1) * NANDROID_ACTIONS_NUM) + NANDROID_FIXED_ENTRIES + 1];
 
+    // actions for primary_path
     add_nandroid_options_for_volume(list, primary_path, offset);
-    offset += 4;
+    offset += NANDROID_ACTIONS_NUM;
 
+    // actions for voldmanaged volumes
     if (extra_paths != NULL) {
         for (i = 0; i < num_extra_volumes; i++) {
             add_nandroid_options_for_volume(list, extra_paths[i], offset);
-            offset += 4;
+            offset += NANDROID_ACTIONS_NUM;
         }
     }
 
+    // fixed bottom entries
     list[offset] = "free unused backup data";
-    offset++;
-    list[offset] = "choose default backup format";
-    offset++;
+    list[offset + 1] = "choose default backup format";
+    offset += NANDROID_FIXED_ENTRIES;
 
 #ifdef RECOVERY_EXTEND_NANDROID_MENU
     extend_nandroid_menu(list, offset, sizeof(list) / sizeof(char*));
     offset++;
 #endif
 
+    // extra NULL for GO_BACK
     list[offset] = NULL;
+    offset++;
 
     for (;;) {
         chosen_item = get_filtered_menu_selection(headers, list, 0, 0, offset);
         if (chosen_item == GO_BACK || chosen_item == REFRESH)
             break;
-        int chosen_subitem = chosen_item % 4;
-        if (chosen_item == max_backup_index) {
+
+        // fixed bottom entries
+        if (chosen_item == action_entries_num) {
             run_dedupe_gc();
-        } else if (chosen_item == (max_backup_index + 1)) {
+        } else if (chosen_item == (action_entries_num + 1)) {
             choose_default_backup_format();
-        } else if (chosen_item < max_backup_index){
-            if (chosen_item < 4) {
+        } else if (chosen_item < action_entries_num){
+            // get nandroid volume actions path
+            if (chosen_item < NANDROID_ACTIONS_NUM) {
                 chosen_path = primary_path;
             } else if (extra_paths != NULL) {
-                chosen_path = extra_paths[(chosen_item / 4) -1];
+                chosen_path = extra_paths[(chosen_item / NANDROID_ACTIONS_NUM) - 1];
             }
+
+            // process selected nandroid action
+            int chosen_subitem = chosen_item % NANDROID_ACTIONS_NUM;
             switch (chosen_subitem) {
-            case 0:
-                {
-                    char backup_path[PATH_MAX];
-                    time_t t = time(NULL);
-                    struct tm *tmp = localtime(&t);
-                    if (tmp == NULL)
+                case 0:
                     {
-                        struct timeval tp;
-                        gettimeofday(&tp, NULL);
-                        sprintf(backup_path, "%s/clockworkmod/backup/%ld", chosen_path, tp.tv_sec);
+                        char backup_path[PATH_MAX];
+                        time_t t = time(NULL);
+                        struct tm *tmp = localtime(&t);
+                        if (tmp == NULL)
+                        {
+                            struct timeval tp;
+                            gettimeofday(&tp, NULL);
+                            sprintf(backup_path, "%s/clockworkmod/backup/%ld", chosen_path, tp.tv_sec);
+                        }
+                        else
+                        {
+                            char path_fmt[PATH_MAX];
+                            strftime(path_fmt, sizeof(path_fmt), "clockworkmod/backup/%F.%H.%M.%S", tmp);
+                            // this sprintf results in:
+                            // clockworkmod/backup/%F.%H.%M.%S (time values are populated too)
+                            sprintf(backup_path, "%s/%s", chosen_path, path_fmt);
+                        }
+                        if (confirm_selection("Confirm backup?", "Yes - Backup")) {
+                            nandroid_backup(backup_path);
+                        }
                     }
-                    else
-                    {
-                        char path_fmt[PATH_MAX];
-                        strftime(path_fmt, sizeof(path_fmt), "clockworkmod/backup/%F.%H.%M.%S", tmp);
-                        // this sprintf results in:
-                        // /emmc/clockworkmod/backup/%F.%H.%M.%S (time values are populated too)
-                        sprintf(backup_path, "%s/%s", chosen_path, path_fmt);
-                    }
-                    if (confirm_selection("Confirm backup?", "Yes - Backup")) {
-                        nandroid_backup(backup_path);
-                    }
-                }
-                break;
-            case 1:
-                show_nandroid_restore_menu(chosen_path);
-                break;
-            case 2:
-                show_nandroid_delete_menu(chosen_path);
-                break;
-            case 3:
-                show_nandroid_advanced_restore_menu(chosen_path);
-                break;
-            default:
-                break;
+                    break;
+                case 1:
+                    show_nandroid_restore_menu(chosen_path);
+                    break;
+                case 2:
+                    show_nandroid_delete_menu(chosen_path);
+                    break;
+                case 3:
+                    show_nandroid_advanced_restore_menu(chosen_path);
+                    break;
+                default:
+                    break;
             }
         } else {
 #ifdef RECOVERY_EXTEND_NANDROID_MENU
-                handle_nandroid_menu(10, chosen_item);
+                handle_nandroid_menu(action_entries_num + NANDROID_FIXED_ENTRIES, chosen_item);
 #endif
             goto out;
         }
     }
 out:
-    for (i = 0; i < max_backup_index; i++)
+    for (i = 0; i < action_entries_num; i++)
         free(list[i]);
     return chosen_item;
 }
@@ -1243,10 +1276,10 @@ void format_sdcard(const char* volume) {
     if (is_data_media_volume_path(volume))
         return;
 
-    Volume *vol = volume_for_path(volume);
-    if (vol == NULL || strcmp(vol->fs_type, "auto") != 0)
+    Volume *v = volume_for_path(volume);
+    if (v == NULL || strcmp(v->fs_type, "auto") != 0)
         return;
-    if (!fs_mgr_is_voldmanaged(vol) && !can_partition(volume))
+    if (!fs_mgr_is_voldmanaged(v) && !can_partition(volume))
         return;
 
     char* headers[] = {"Format device:", volume, "", NULL };
@@ -1269,7 +1302,6 @@ void format_sdcard(const char* volume) {
     if (!confirm_selection( "Confirm formatting?", "Yes - Format device"))
         return;
 
-    Volume *v = volume_for_path(volume);
     if (ensure_path_unmounted(v->mount_point) != 0)
         return;
 
