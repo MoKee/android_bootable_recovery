@@ -19,6 +19,8 @@
 
 #include "ui.h"
 
+#define KEY_FLAG_ABS 0x8000
+
 class Device {
   public:
     virtual ~Device() { }
@@ -65,9 +67,8 @@ class Device {
     //   - invoke a specific action (a menu position: any non-negative number)
     virtual int HandleMenuKey(int key, int visible) = 0;
 
-    enum BuiltinAction { NO_ACTION, REBOOT, APPLY_EXT,
-                         APPLY_CACHE,   // APPLY_CACHE is deprecated; has no effect
-                         APPLY_ADB_SIDELOAD, WIPE_DATA, WIPE_CACHE,
+    enum BuiltinAction { NO_ACTION, REBOOT, APPLY_UPDATE,
+                         WIPE_DATA, WIPE_CACHE, WIPE_MEDIA,
                          REBOOT_BOOTLOADER, SHUTDOWN, READ_RECOVERY_LASTLOG };
 
     // Perform a recovery action selected from the menu.
@@ -85,6 +86,8 @@ class Device {
     static const int kHighlightUp = -2;
     static const int kHighlightDown = -3;
     static const int kInvokeItem = -4;
+    static const int kGoBack = -5;
+    static const int kRefresh = -6;
 
     // Called when we do a wipe data/factory reset operation (either via a
     // reboot from the main system with the --wipe_data flag, or when the
@@ -93,6 +96,9 @@ class Device {
     // needed.  Return 0 on success.  The userdata and cache partitions
     // are erased AFTER this returns (whether it returns success or not).
     virtual int WipeData() { return 0; }
+
+    // Same as above for media (/data/media and primary storage)
+    virtual int WipeMedia() { return 0; }
 
     // Return the headers (an array of strings, one per line,
     // NULL-terminated) for the main menu.  Typically these tell users

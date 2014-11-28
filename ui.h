@@ -21,6 +21,74 @@
 #include <pthread.h>
 #include <time.h>
 
+#include "messagesocket.h"
+
+#define MAX_NR_INPUT_DEVICES    8
+#define MAX_NR_VKEYS            8
+
+/*
+ * Simple representation of a (x,y) coordinate with convenience operators
+ */
+struct point {
+    point() : x(0), y(0) {}
+    point operator+(const point& rhs) const {
+        point tmp;
+        tmp.x = x + rhs.x;
+        tmp.y = y + rhs.y;
+        return tmp;
+    }
+    point operator-(const point& rhs) const {
+        point tmp;
+        tmp.x = x - rhs.x;
+        tmp.y = y - rhs.y;
+        return tmp;
+    }
+
+    int         x;
+    int         y;
+};
+
+/*
+ * Virtual key representation.  Valid when keycode != -1.
+ */
+struct vkey {
+    vkey() : keycode(-1) {}
+    int         keycode;
+    point       min;
+    point       max;
+};
+
+/*
+ * Input device representation.  Valid when fd != -1.
+ * This holds all information and state related to a given input device.
+ */
+struct input_device {
+    input_device() : fd(-1) {}
+
+    int         fd;
+    vkey        virtual_keys[MAX_NR_VKEYS];
+    point       touch_min;
+    point       touch_max;
+
+    int         rel_sum;            // Accumulated relative movement
+
+    bool        saw_pos_x;          // Did sequence have ABS_MT_POSITION_X?
+    bool        saw_pos_y;          // Did sequence have ABS_MT_POSITION_Y?
+    bool        saw_mt_report;      // Did sequence have SYN_MT_REPORT?
+    bool        saw_tracking_id;    // Did sequence have SYN_TRACKING_ID?
+    bool        in_touch;           // Are we in a touch event?
+    bool        in_swipe;           // Are we in a swipe event?
+
+    point       touch_pos;          // Current touch coordinates
+    point       touch_start;        // Coordinates of touch start
+    point       touch_track;        // Last tracked coordinates
+
+    int         slot_nr_active;
+    int         slot_first;
+    int         slot_current;
+    int         tracking_id;
+};
+
 // Abstract class for controlling the user interface during recovery.
 class RecoveryUI {
   public:
@@ -37,7 +105,7 @@ class RecoveryUI {
     virtual void SetLocale(const char* locale) { }
 
     // Set the overall recovery state ("background image").
-    enum Icon { NONE, INSTALLING_UPDATE, ERASING, NO_COMMAND, ERROR };
+    enum Icon { NONE, INSTALLING_UPDATE, VIEWING_LOG, ERASING, NO_COMMAND, INFO, ERROR, NR_ICONS };
     virtual void SetBackground(Icon icon) = 0;
 
     // --- progress indicator ---
@@ -64,11 +132,21 @@ class RecoveryUI {
     // Write a message to the on-screen log (shown if the user has
     // toggled on the text display).
     virtual void Print(const char* fmt, ...) = 0; // __attribute__((format(printf, 1, 2))) = 0;
+    virtual void ClearLog() = 0;
+    virtual void DialogShowInfo(const char* text) = 0;
+    virtual void DialogShowError(const char* text) = 0;
+    virtual void DialogShowErrorLog(const char* text) = 0;
+    virtual int  DialogShowing() const = 0;
+    virtual bool DialogDismissable() const = 0;
+    virtual void DialogDismiss() = 0;
 
     // --- key handling ---
 
     // Wait for keypress and return it.  May return -1 after timeout.
     virtual int WaitKey();
+
+    // Cancel a WaitKey()
+    virtual void CancelWaitKey();
 
     virtual bool IsKeyPressed(int key);
 
@@ -102,6 +180,9 @@ class RecoveryUI {
 
     // --- menu display ---
 
+    virtual int MenuItemStart() const = 0;
+    virtual int MenuItemHeight() const = 0;
+
     // Display some header text followed by a menu of items, which appears
     // at the top of the screen (in place of any scrolling ui_print()
     // output, if necessary).
@@ -110,11 +191,14 @@ class RecoveryUI {
 
     // Set the menu highlight to the given index, and return it (capped to
     // the range [0..numitems).
-    virtual int SelectMenu(int sel) = 0;
+    virtual int SelectMenu(int sel, bool abs = false) = 0;
 
     // End menu mode, resetting the text overlay so that ui_print()
     // statements will be displayed.
     virtual void EndMenu() = 0;
+
+    // Notify of volume state change
+    virtual void NotifyVolumesChanged();
 
 protected:
     void EnqueueKey(int key_code);
@@ -130,10 +214,18 @@ private:
     int key_down_count;                // under key_queue_mutex
     bool enable_reboot;                // under key_queue_mutex
     int rel_sum;
+    int v_changed;
 
     int consecutive_power_keys;
     int consecutive_alternate_keys;
     int last_key;
+
+    input_device input_devices[MAX_NR_INPUT_DEVICES];
+
+    point fb_dimensions;
+    point min_swipe_px;
+
+    MessageSocket message_socket;
 
     typedef struct {
         RecoveryUI* ui;
@@ -145,11 +237,23 @@ private:
 
     static void* input_thread(void* cookie);
     static int input_callback(int fd, uint32_t epevents, void* data);
-    void process_key(int key_code, int updown);
+    void process_key(input_device* dev, int key_code, int updown);
+    void process_syn(input_device* dev, int code, int value);
+    void process_abs(input_device* dev, int code, int value);
+    void process_rel(input_device* dev, int code, int value);
     bool usb_connected();
+    bool VolumesChanged();
 
     static void* time_key_helper(void* cookie);
     void time_key(int key_code, int count);
+
+    void process_touch(int fd, struct input_event *ev);
+    void calibrate_touch(input_device* dev);
+    void setup_vkeys(input_device* dev);
+    void calibrate_swipe();
+    void handle_press(input_device* dev);
+    void handle_release(input_device* dev);
+    void handle_gestures(input_device* dev);
 };
 
 #endif  // RECOVERY_UI_H
