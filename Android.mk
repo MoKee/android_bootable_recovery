@@ -101,11 +101,11 @@ ifeq ($(TARGET_HAVE_OEMLOCK), true)
     LOCAL_STATIC_LIBRARIES += liboemlock
 endif
 
-ifeq ($(TARGET_USERIMAGES_USE_EXT4), true)
+#ifeq ($(TARGET_USERIMAGES_USE_EXT4), true)
     LOCAL_CFLAGS += -DUSE_EXT4
     LOCAL_C_INCLUDES += system/extras/ext4_utils system/vold
     LOCAL_STATIC_LIBRARIES += libext4_utils_static libz
-endif
+#endif
 
 LOCAL_CFLAGS += -DUSE_EXT4 -DMINIVOLD
 LOCAL_C_INCLUDES += system/extras/ext4_utils system/core/fs_mgr/include external/fsck_msdos
@@ -148,6 +148,8 @@ BUSYBOX_LINKS := $(shell cat external/busybox/busybox-minimal.links)
 exclude := tune2fs mke2fs
 RECOVERY_BUSYBOX_SYMLINKS := $(addprefix $(TARGET_RECOVERY_ROOT_OUT)/sbin/,$(filter-out $(exclude),$(notdir $(BUSYBOX_LINKS))))
 
+ifeq ($(ONE_SHOT_MAKEFILE),)
+
 LOCAL_ADDITIONAL_DEPENDENCIES += \
     minivold \
     recovery_e2fsck \
@@ -159,6 +161,12 @@ LOCAL_ADDITIONAL_DEPENDENCIES += \
     bu_recovery
 
 LOCAL_ADDITIONAL_DEPENDENCIES += $(RECOVERY_SYMLINKS) $(RECOVERY_BUSYBOX_SYMLINKS)
+
+ifneq ($(TARGET_RECOVERY_DEVICE_MODULES),)
+    LOCAL_ADDITIONAL_DEPENDENCIES += $(TARGET_RECOVERY_DEVICE_MODULES)
+endif
+
+endif
 
 include $(BUILD_EXECUTABLE)
 
@@ -192,11 +200,11 @@ LOCAL_SRC_FILES := \
     roots.cpp
 LOCAL_CFLAGS += -DMINIVOLD
 LOCAL_CFLAGS += -Wno-unused-parameter
-ifeq ($(TARGET_USERIMAGES_USE_EXT4), true)
+#ifeq ($(TARGET_USERIMAGES_USE_EXT4), true)
     LOCAL_CFLAGS += -DUSE_EXT4
     LOCAL_C_INCLUDES += system/extras/ext4_utils
     LOCAL_STATIC_LIBRARIES += libext4_utils_static libz
-endif
+#endif
 LOCAL_STATIC_LIBRARIES += \
     libsparse_static \
     libvoldclient \
