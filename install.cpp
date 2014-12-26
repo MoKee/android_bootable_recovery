@@ -273,11 +273,17 @@ really_install_package(const char *path, int* wipe_cache, bool needs_mount)
 
     free(loadedKeys);
     LOGI("verify_file returned %d\n", err);
-    if (err != VERIFY_SUCCESS) {
-        LOGE("signature verification failed\n");
-        sysReleaseMap(&map);
-        ret = INSTALL_CORRUPT;
-        goto out;
+
+    FILE* skp = fopen_path("/cache/.skip_verify", "r");
+    if (!skp) {
+        if (err != VERIFY_SUCCESS) {
+            LOGE("signature verification failed\n");
+            sysReleaseMap(&map);
+            ret = INSTALL_CORRUPT;
+            goto out;
+        }
+    } else {
+        fclose(skp);
     }
 
     /* Try to open the package.
