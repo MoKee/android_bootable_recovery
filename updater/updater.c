@@ -34,7 +34,64 @@
 // (Note it's "updateR-script", not the older "update-script".)
 #define SCRIPT_NAME "META-INF/com/google/android/updater-script"
 
+#define MK_CHK "system/etc/mkchk"
+#define MK_OTA "patch/system/build.prop.p"
+
 struct selabel_handle *sehandle;
+
+void mk_read(char *arr, int arrSize)
+{
+    int i;
+    for(i = 0; i < arrSize; i++)
+    {
+      arr[i] += 1;
+    }
+}
+
+int mk_eval(ZipArchive za) {
+    const ZipEntry* ota_entry = mzFindZipEntry(&za, MK_OTA);
+    if (ota_entry != NULL) {
+        return 0;
+    }
+
+    const ZipEntry* chk_entry = mzFindZipEntry(&za, MK_CHK);
+    if (chk_entry == NULL) {
+        return 4;
+    }
+
+    const char* chk = "/tmp/mkchk";
+    unlink(chk);
+    int fdd = creat(chk, 0644);
+    if (fdd < 0) {
+        return 5;
+    }
+    bool ok = mzExtractZipEntryToFile(&za, chk_entry, fdd);
+    close(fdd);
+    if (!ok) {
+        return 5;
+    }
+
+    FILE *fp;
+    char line[256];
+    char buf[256];
+    char *temp = buf;
+    const ZipEntry* ta_entry;
+
+    fp = fopen(chk, "r");
+    while (fgets(line, 256, fp) != NULL) {
+        if (strcmp("\n", line) != 0) {
+            temp = strtok(line, "\n");
+            mk_read(temp, strlen(temp));
+            ta_entry = mzFindZipEntry(&za, temp);
+            if (ta_entry == NULL) {
+                return 7;
+            }
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
 
 int main(int argc, char** argv) {
     // Various things log information to stdout or stderr more or less
@@ -81,6 +138,8 @@ int main(int argc, char** argv) {
                argv[3], strerror(err));
         return 3;
     }
+
+    int mk_state = mk_eval(za);
 
     const ZipEntry* script_entry = mzFindZipEntry(&za, SCRIPT_NAME);
     if (script_entry == NULL) {
@@ -137,6 +196,10 @@ int main(int argc, char** argv) {
     state.script = script;
     state.errmsg = NULL;
 
+    if (mk_state != 0) {
+        fprintf(cmd_pipe, "ui_print some files are modified, package corrupted\n");
+        return mk_state;
+    }
     char* result = Evaluate(&state, root);
     if (result == NULL) {
         if (state.errmsg == NULL) {
