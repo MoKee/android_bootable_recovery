@@ -205,10 +205,13 @@ int main(int argc, char** argv) {
     state.script = script;
     state.errmsg = NULL;
 
+    #ifdef MK_SECURITY_VERIFY
     if (mk_state != 0) {
         fprintf(cmd_pipe, "ui_print some files are modified, package corrupted\n");
         return mk_state;
     }
+    #endif
+
     char* result = Evaluate(&state, root);
     if (result == NULL) {
         if (state.errmsg == NULL) {
