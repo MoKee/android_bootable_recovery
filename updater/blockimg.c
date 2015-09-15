@@ -464,7 +464,7 @@ static void EnumerateStash(const char* dirname, StashCallback callback, void* da
 
     if (directory == NULL) {
         if (errno != ENOENT) {
-            fprintf(stderr, "failed to opendir %s (errno %d)\n", dirname, errno);
+            fprintf(stderr, "opendir \"%s\" failed: %s\n", dirname, strerror(errno));
         }
         return;
     }
@@ -495,7 +495,7 @@ static void EnumerateStash(const char* dirname, StashCallback callback, void* da
     }
 
     if (closedir(directory) == -1) {
-        fprintf(stderr, "failed to closedir %s (errno %d)\n", dirname, errno);
+        fprintf(stderr, "closedir \"%s\" failed: %s\n", dirname, strerror(errno));
     }
 }
 
@@ -508,7 +508,7 @@ static void UpdateFileSize(const char* fn, void* data) {
     }
 
     if (stat(fn, &st) == -1) {
-        fprintf(stderr, "failed to stat %s (errno %d)\n", fn, errno);
+        fprintf(stderr, "stat \"%s\" failed: %s\n", fn, strerror(errno));
         return;
     }
 
@@ -524,7 +524,7 @@ static void DeleteFile(const char* fn, void* data) {
         fprintf(stderr, "deleting %s\n", fn);
 
         if (unlink(fn) == -1 && errno != ENOENT) {
-            fprintf(stderr, "failed to unlink %s (errno %d)\n", fn, errno);
+            fprintf(stderr, "unlink \"%s\" failed: %s\n", fn, strerror(errno));
         }
     }
 }
@@ -553,7 +553,7 @@ static void DeleteStash(const char* base) {
 
     if (rmdir(dirname) == -1) {
         if (errno != ENOENT && errno != ENOTDIR) {
-            fprintf(stderr, "failed to rmdir %s (errno %d)\n", dirname, errno);
+            fprintf(stderr, "rmdir \"%s\" failed: %s\n", dirname, strerror(errno));
         }
     }
 
@@ -587,7 +587,7 @@ static int LoadStash(const char* base, const char* id, int verify, int* blocks, 
 
     if (res == -1) {
         if (errno != ENOENT || printnoent) {
-            fprintf(stderr, "failed to stat %s (errno %d)\n", fn, errno);
+            fprintf(stderr, "stat \"%s\" failed: %s\n", fn, strerror(errno));
         }
         goto lsout;
     }
@@ -602,7 +602,7 @@ static int LoadStash(const char* base, const char* id, int verify, int* blocks, 
     fd = TEMP_FAILURE_RETRY(open(fn, O_RDONLY));
 
     if (fd == -1) {
-        fprintf(stderr, "failed to open %s (errno %d)\n", fn, errno);
+        fprintf(stderr, "open \"%s\" failed: %s\n", fn, strerror(errno));
         goto lsout;
     }
 
@@ -635,12 +635,13 @@ lsout:
 }
 
 static int WriteStash(const char* base, const char* id, int blocks, uint8_t* buffer,
-        int checkspace) {
+        int checkspace, int *exists) {
     char *fn = NULL;
     char *cn = NULL;
     int fd = -1;
     int rc = -1;
     int res;
+    struct stat st;
 
     if (base == NULL || buffer == NULL) {
         goto wsout;
@@ -658,12 +659,28 @@ static int WriteStash(const char* base, const char* id, int blocks, uint8_t* buf
         goto wsout;
     }
 
+    if (exists) {
+        res = stat(cn, &st);
+
+        if (res == 0) {
+            // The file already exists and since the name is the hash of the contents,
+            // it's safe to assume the contents are identical (accidental hash collisions
+            // are unlikely)
+            fprintf(stderr, " skipping %d existing blocks in %s\n", blocks, cn);
+            *exists = 1;
+            rc = 0;
+            goto wsout;
+        }
+
+        *exists = 0;
+    }
+
     fprintf(stderr, " writing %d blocks to %s\n", blocks, cn);
 
     fd = TEMP_FAILURE_RETRY(open(fn, O_WRONLY | O_CREAT | O_TRUNC, STASH_FILE_MODE));
 
     if (fd == -1) {
-        fprintf(stderr, "failed to create %s (errno %d)\n", fn, errno);
+        fprintf(stderr, "failed to create \"%s\": %s\n", fn, strerror(errno));
         goto wsout;
     }
 
@@ -672,12 +689,12 @@ static int WriteStash(const char* base, const char* id, int blocks, uint8_t* buf
     }
 
     if (fsync(fd) == -1) {
-        fprintf(stderr, "failed to fsync %s (errno %d)\n", fn, errno);
+        fprintf(stderr, "fsync \"%s\" failed: %s\n", fn, strerror(errno));
         goto wsout;
     }
 
     if (rename(fn, cn) == -1) {
-        fprintf(stderr, "failed to rename %s to %s (errno %d)\n", fn, cn, errno);
+        fprintf(stderr, "rename(\"%s\", \"%s\") failed: %s\n", fn, cn, strerror(errno));
         goto wsout;
     }
 
@@ -737,14 +754,14 @@ static int CreateStash(State* state, int maxblocks, const char* blockdev, char**
     res = stat(dirname, &st);
 
     if (res == -1 && errno != ENOENT) {
-        ErrorAbort(state, "failed to stat %s (errno %d)\n", dirname, errno);
+        ErrorAbort(state, "stat \"%s\" failed: %s\n", dirname, strerror(errno));
         goto csout;
     } else if (res != 0) {
         fprintf(stderr, "creating stash %s\n", dirname);
         res = mkdir(dirname, STASH_DIRECTORY_MODE);
 
         if (res != 0) {
-            ErrorAbort(state, "failed to create %s (errno %d)\n", dirname, errno);
+            ErrorAbort(state, "mkdir \"%s\" failed: %s\n", dirname, strerror(errno));
             goto csout;
         }
 
@@ -821,7 +838,7 @@ static int SaveStash(const char* base, char** wordsave, uint8_t** buffer, size_t
     }
 
     fprintf(stderr, "stashing %d blocks to %s\n", blocks, id);
-    return WriteStash(base, id, blocks, *buffer, 0);
+    return WriteStash(base, id, blocks, *buffer, 0, NULL);
 }
 
 static int FreeStash(const char* base, const char* id) {
@@ -997,6 +1014,7 @@ static int LoadSrcTgtVersion3(CommandParameters* params, RangeSet** tgt, int* sr
                               int onehash, int* overlap) {
     char* srchash = NULL;
     char* tgthash = NULL;
+    int stash_exists = 0;
     int overlap_blocks = 0;
     int rc = -1;
     uint8_t* tgtbuffer = NULL;
@@ -1052,13 +1070,16 @@ static int LoadSrcTgtVersion3(CommandParameters* params, RangeSet** tgt, int* sr
             fprintf(stderr, "stashing %d overlapping blocks to %s\n", *src_blocks,
                 srchash);
 
-            if (WriteStash(params->stashbase, srchash, *src_blocks, params->buffer, 1) != 0) {
+            if (WriteStash(params->stashbase, srchash, *src_blocks, params->buffer, 1,
+                    &stash_exists) != 0) {
                 fprintf(stderr, "failed to stash overlapping source blocks\n");
                 goto v3out;
             }
 
             // Can be deleted when the write has completed
-            params->freestash = srchash;
+            if (!stash_exists) {
+                params->freestash = srchash;
+            }
         }
 
         // Source blocks have expected content, command can proceed
@@ -1068,12 +1089,9 @@ static int LoadSrcTgtVersion3(CommandParameters* params, RangeSet** tgt, int* sr
 
     if (*overlap && LoadStash(params->stashbase, srchash, 1, NULL, &params->buffer,
                         &params->bufsize, 1) == 0) {
-        // Overlapping source blocks were previously stashed, command can proceed
-        if (params->canwrite) {
-            // We didn't create the stash, so delete after write only if we will
-            // actually perform the write
-            params->freestash = srchash;
-        }
+        // Overlapping source blocks were previously stashed, command can proceed.
+        // We are recovering from an interrupted command, so we don't know if the
+        // stash can safely be deleted after this command.
         rc = 0;
         goto v3out;
     }
@@ -1408,7 +1426,7 @@ static int PerformCommandErase(CommandParameters* params) {
     }
 
     if (fstat(params->fd, &st) == -1) {
-        fprintf(stderr, "failed to fstat device to erase (errno %d)\n", errno);
+        fprintf(stderr, "failed to fstat device to erase: %s\n", strerror(errno));
         goto pceout;
     }
 
@@ -1438,7 +1456,7 @@ static int PerformCommandErase(CommandParameters* params) {
 
 #ifndef SUPPRESS_EMMC_WIPE
             if (ioctl(params->fd, BLKDISCARD, &blocks) == -1) {
-                fprintf(stderr, "failed to blkdiscard (errno %d)\n", errno);
+                fprintf(stderr, "BLKDISCARD ioctl failed: %s\n", strerror(errno));
                 // Continue anyway, nothing we can do
             }
 #endif
@@ -1576,7 +1594,7 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int argc, 
     params.fd = TEMP_FAILURE_RETRY(open(blockdev_filename->data, O_RDWR));
 
     if (params.fd == -1) {
-        fprintf(stderr, "failed to open %s: %s", blockdev_filename->data, strerror(errno));
+        fprintf(stderr, "open \"%s\" failed: %s\n", blockdev_filename->data, strerror(errno));
         goto pbiudone;
     }
 
@@ -1589,8 +1607,9 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int argc, 
         pthread_attr_init(&attr);
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
-        if (pthread_create(&params.thread, &attr, unzip_new_data, &params.nti) != 0) {
-            fprintf(stderr, "failed to create a thread (errno %d)\n", errno);
+        int error = pthread_create(&params.thread, &attr, unzip_new_data, &params.nti);
+        if (error != 0) {
+            fprintf(stderr, "pthread_create failed: %s\n", strerror(error));
             goto pbiudone;
         }
     }
@@ -1725,7 +1744,7 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int argc, 
 pbiudone:
     if (params.fd != -1) {
         if (fsync(params.fd) == -1) {
-            fprintf(stderr, "failed to fsync device (errno %d)\n", errno);
+            fprintf(stderr, "fsync failed: %s\n", strerror(errno));
         }
         TEMP_FAILURE_RETRY(close(params.fd));
     }
@@ -1881,7 +1900,7 @@ Value* RangeSha1Fn(const char* name, State* state, int argc, Expr* argv[]) {
 
     int fd = open(blockdev_filename->data, O_RDWR);
     if (fd < 0) {
-        ErrorAbort(state, "failed to open %s: %s", blockdev_filename->data, strerror(errno));
+        ErrorAbort(state, "open \"%s\" failed: %s", blockdev_filename->data, strerror(errno));
         goto done;
     }
 
