@@ -36,75 +36,6 @@
 
 struct selabel_handle *sehandle;
 
-#ifdef MK_SECURITY_VERIFY
-
-#define MK_CHK "system/etc/mkchk"
-#define MK_OTA "patch/system/build.prop.p"
-
-void mk_read(char *arr, int arrSize)
-{
-    int i;
-    for(i = 0; i < arrSize; i++)
-    {
-      arr[i] += 1;
-    }
-}
-
-int mk_eval(ZipArchive za) {
-    const ZipEntry* ota_entry = mzFindZipEntry(&za, MK_OTA);
-    if (ota_entry != NULL) {
-        return 0;
-    }
-
-    const ZipEntry* chk_entry = mzFindZipEntry(&za, MK_CHK);
-    if (chk_entry == NULL) {
-        return 4;
-    }
-
-    const char* chk = "/tmp/mkchk";
-    unlink(chk);
-    int fdd = creat(chk, 0644);
-    if (fdd < 0) {
-        return 5;
-    }
-    bool ok = mzExtractZipEntryToFile(&za, chk_entry, fdd);
-    close(fdd);
-    if (!ok) {
-        return 5;
-    }
-
-    FILE *fp;
-    char line[256];
-    char buf[256];
-    char *temp = buf;
-    const ZipEntry* ta_entry;
-
-    unsigned int num_files1 = mzZipEntryCount(&za);
-    fp = fopen(chk, "r");
-    fgets(line, 256, fp);
-    unsigned int num_files2 = (unsigned int) strtol(line, &temp, 10);
-    if (num_files1 != num_files2) {
-        fclose(fp);
-        return 4;
-    }
-
-    while (fgets(line, 256, fp) != NULL) {
-        if (strcmp("\n", line) != 0) {
-            temp = strtok(line, "\n");
-            mk_read(temp, strlen(temp));
-            ta_entry = mzFindZipEntry(&za, temp);
-            if (ta_entry == NULL) {
-                fclose(fp);
-                return 7;
-            }
-        }
-    }
-
-    fclose(fp);
-    return 0;
-}
-#endif
-
 int main(int argc, char** argv) {
     // Various things log information to stdout or stderr more or less
     // at random (though we've tried to standardize on stdout).  The
@@ -150,10 +81,6 @@ int main(int argc, char** argv) {
                argv[3], strerror(err));
         return 3;
     }
-
-#ifdef MK_SECURITY_VERIFY
-    int mk_state = mk_eval(za);
-#endif
 
     const ZipEntry* script_entry = mzFindZipEntry(&za, SCRIPT_NAME);
     if (script_entry == NULL) {
@@ -209,13 +136,6 @@ int main(int argc, char** argv) {
     state.cookie = &updater_info;
     state.script = script;
     state.errmsg = NULL;
-
-#ifdef MK_SECURITY_VERIFY
-    if (mk_state != 0) {
-        fprintf(cmd_pipe, "ui_print some files are modified, package corrupted\n");
-        return mk_state;
-    }
-#endif
 
     char* result = Evaluate(&state, root);
     if (result == NULL) {
