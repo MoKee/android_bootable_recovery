@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+ifeq ($(BUILD_TWRP),)
 
 ifeq ($(call my-dir),$(call project-path-for,recovery))
 
@@ -340,4 +341,5 @@ include $(LOCAL_PATH)/minui/Android.mk \
     $(LOCAL_PATH)/applypatch/Android.mk \
     $(LOCAL_PATH)/fstools/Android.mk
 
+endif
 endif
