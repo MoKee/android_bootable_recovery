@@ -340,6 +340,7 @@ include \
     $(LOCAL_PATH)/tools/Android.mk \
     $(LOCAL_PATH)/uncrypt/Android.mk \
     $(LOCAL_PATH)/updater/Android.mk \
+    $(LOCAL_PATH)/mkchecker/Android.mk \
     $(LOCAL_PATH)/update_verifier/Android.mk \
     $(LOCAL_PATH)/fstools/Android.mk
 
