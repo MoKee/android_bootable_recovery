@@ -21,8 +21,10 @@
 #include <string.h>
 #include <sys/wait.h>
 
+#include <android-base/strings.h>
+
 #include "edify/expr.h"
-#include "install.h"
+#include "updater/install.h"
 #include "updater/updater.h"
 #include "minzip/Zip.h"
 #include "minzip/SysUtil.h"
@@ -52,6 +54,33 @@
 
 extern bool have_eio_error;
 struct selabel_handle *sehandle = NULL;
+
+static void mkChecker(State* state, const std::string& buffer) {
+    UpdaterInfo* ui = reinterpret_cast<UpdaterInfo*>(state->cookie);
+
+    // "line1\nline2\n" will be split into 3 tokens: "line1", "line2" and "".
+    // So skip sending empty strings.
+    std::vector<std::string> lines = android::base::Split(buffer, "\n");
+    for (auto& line: lines) {
+        if (!line.empty()) {
+            fprintf(ui->cmd_pipe, "mk_checker %s\n", line.c_str());
+        }
+    }
+}
+
+Value* MKCheckerFn(const char* name, State* state, int argc, Expr* argv[]) {
+    if (argc != 2) {
+        return ErrorAbort(state, kArgsParsingFailure, "%s() expects 2 args, got %d", name, argc);
+    }
+    char** args = ReadVarArgs(state, argc, argv);
+
+    std::string buffer = args[0];
+    buffer += "=";
+    buffer += args[1];
+    buffer += "\n";
+    mkChecker(state, buffer);
+    return StringValue(strdup(buffer.c_str()));
+}
 
 int main(int argc, char** argv) {
     // Various things log information to stdout or stderr more or less
@@ -124,6 +153,7 @@ int main(int argc, char** argv) {
 
     RegisterBuiltins();
     RegisterInstallFunctions();
+    RegisterFunction("mk_checker", MKCheckerFn);
     RegisterDeviceExtensions();
     FinishRegistration();
 
