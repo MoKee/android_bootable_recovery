@@ -297,7 +297,7 @@ void ScreenRecoveryUI::draw_foreground_locked() {
   }
 }
 
-/* Lineage teal: #167c80 */
+/* MoKee teal: #167c80 */
 void ScreenRecoveryUI::SetColor(UIElement e) const {
   switch (e) {
     case STATUSBAR:
@@ -633,9 +633,9 @@ void ScreenRecoveryUI::draw_screen_locked() {
       text_x = (gr_fb_width() - (android_version_.size() * char_width_)) / 2;
       text_y = gr_fb_height() - 2 * (char_height_ + 4);
       DrawTextLine(text_x, text_y, android_version_.c_str(), false);
-      text_x = (gr_fb_width() - (lineage_version_.size() * char_width_)) / 2;
+      text_x = (gr_fb_width() - (mokee_version_.size() * char_width_)) / 2;
       text_y = gr_fb_height() - 1 * (char_height_ + 4);
-      DrawTextLine(text_x, text_y, lineage_version_.c_str(), false);
+      DrawTextLine(text_x, text_y, mokee_version_.c_str(), false);
     }
   }
   else {
