@@ -232,7 +232,7 @@ class RecoveryUI {
   void EnqueueTouch(const Point& pos);
 
   std::string android_version_;
-  std::string lineage_version_;
+  std::string mk_version_;
 
   // The locale that's used to show the rendered texts.
   std::string locale_;

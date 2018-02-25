@@ -634,9 +634,9 @@ void ScreenRecoveryUI::draw_screen_locked() {
       text_y = gr_fb_height() - 2 * (char_height_ + 4);
       SetColor(MENU);
       DrawTextLine(text_x, text_y, android_version_.c_str(), false);
-      text_x = kMarginWidth + (gr_fb_width() - (lineage_version_.size() * char_width_)) / 2;
+      text_x = kMarginWidth + (gr_fb_width() - (mk_version_.size() * char_width_)) / 2;
       text_y = gr_fb_height() - 1 * (char_height_ + 4);
-      DrawTextLine(text_x, text_y, lineage_version_.c_str(), false);
+      DrawTextLine(text_x, text_y, mk_version_.c_str(), false);
     }
   }
   else {
