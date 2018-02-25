@@ -702,15 +702,6 @@ static int GenerateTarget(FileContents* source_file,
         retry = 0;
       }
 
-      int result;
-      if (use_bsdiff) {
-        result = ApplyBSDiffPatch(source_file.data.data(), source_file.data.size(), *patch, 0,
-                                  sink, &ctx);
-      } else {
-        result = ApplyImagePatch(source_file.data.data(), source_file.data.size(), *patch, sink,
-                                 &ctx, bonus_data);
-      }
-
       if (!enough_space && source_patch_value != nullptr) {
         // Using the original source, but not enough free space.  First
         // copy the source file to cache, then delete it from the original
@@ -742,12 +733,13 @@ static int GenerateTarget(FileContents* source_file,
     }
 
     SinkFn sink = nullptr;
-    void* token = nullptr;
     unique_fd output_fd;
     if (target_is_partition) {
       // We store the decoded output in memory.
-      sink = MemorySink;
-      token = &memory_sink_str;
+      sink = [&memory_sink_str](const unsigned char* data, size_t len) {
+        memory_sink_str.append(reinterpret_cast<const char*>(data), len);
+        return len;
+      };
     } else {
       // We write the decoded output to "<tgt-file>.patch".
       output_fd.reset(ota_open(tmp_target_filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_SYNC,
@@ -756,8 +748,18 @@ static int GenerateTarget(FileContents* source_file,
         printf("failed to open output file %s: %s\n", tmp_target_filename.c_str(), strerror(errno));
         return 1;
       }
-      sink = FileSink;
-      token = &output_fd;
+      sink = [&output_fd](const unsigned char* data, size_t len) {
+        size_t done = 0;
+        while (done < len) {
+          ssize_t wrote = TEMP_FAILURE_RETRY(ota_write(output_fd, data + done, len - done));
+          if (wrote == -1) {
+            printf("error writing %zd bytes: %s\n", (len - done), strerror(errno));
+            return done;
+          }
+          done += wrote;
+        }
+        return done;
+      };
     }
 
     SHA1_Init(&ctx);
@@ -765,10 +767,10 @@ static int GenerateTarget(FileContents* source_file,
     int result;
     if (use_bsdiff) {
       result = ApplyBSDiffPatch(source_to_use->data.data(), source_to_use->data.size(), patch, 0,
-                                sink, token, &ctx);
+                                sink, &ctx);
     } else {
       result = ApplyImagePatch(source_to_use->data.data(), source_to_use->data.size(), patch, sink,
-                               token, &ctx, bonus_data);
+                               &ctx, bonus_data);
     }
 
     if (!target_is_partition) {
