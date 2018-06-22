@@ -835,6 +835,15 @@ static bool yes_no(Device* device, const char* question1, const char* question2)
     return (chosen_item == 1);
 }
 
+static bool ask_to_continue_unverified_install(Device* device) {
+#ifdef RELEASE_BUILD
+    return false;
+#else
+    ui->SetProgressType(RecoveryUI::EMPTY);
+    return yes_no(device, "Signature verification failed", "Install anyway?");
+#endif
+}
+
 static bool ask_to_wipe_data(Device* device) {
     return yes_no(device, "Wipe all user data?", "  THIS CAN NOT BE UNDONE!");
 }
@@ -1164,7 +1173,14 @@ static int apply_from_storage(Device* device, const std::string& id, bool* wipe_
     vdc->volumeUnmount(vi.mId, true);
 
     status = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache,
-                                 TEMPORARY_INSTALL_FILE, false, 0/*retry_count*/);
+                                 TEMPORARY_INSTALL_FILE, false, 0/*retry_count*/,
+                                 true/*verify*/);
+    if (status == INSTALL_UNVERIFIED &&
+      ask_to_continue_unverified_install(device)) {
+        status = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache,
+                                 TEMPORARY_INSTALL_FILE, false, 0/*retry_count*/,
+                                 false/*verify*/);
+    }
 
     finish_sdcard_fuse(token);
     return status;
@@ -1203,13 +1219,22 @@ refresh:
         static const char* s_headers[] = { "ADB Sideload", nullptr };
         static const MenuItemVector s_items = { MenuItem("Cancel sideload") };
 
-        start_sideload(wipe_cache, TEMPORARY_INSTALL_FILE);
+        sideload_start();
         int item = get_menu_selection(false, MT_LIST, s_headers, s_items,
                                       false, 0, device);
-        if (item != Device::kNoAction) {
-            stop_sideload();
+        if (item == Device::kRefresh) {
+            sideload_wait(false);
+            status = sideload_install(wipe_cache, TEMPORARY_INSTALL_FILE, true);
+            if (status == INSTALL_UNVERIFIED &&
+              ask_to_continue_unverified_install(device)) {
+                status = sideload_install(wipe_cache, TEMPORARY_INSTALL_FILE, false);
+            }
         }
-        status = wait_sideload();
+        else {
+            sideload_wait(true);
+            status = INSTALL_NONE;
+        }
+        sideload_stop();
     }
     else {
         std::string id = volumes[chosen - 1].mId;
@@ -1754,7 +1779,7 @@ int main(int argc, char **argv) {
             status = INSTALL_SKIPPED;
         } else {
             status = install_package(update_package, &should_wipe_cache,
-                                     TEMPORARY_INSTALL_FILE, true, retry_count);
+                                     TEMPORARY_INSTALL_FILE, true, retry_count, true);
             if (status == INSTALL_SUCCESS && should_wipe_cache) {
                 wipe_cache(false, device);
             }
@@ -1814,8 +1839,10 @@ int main(int argc, char **argv) {
         if (!sideload_auto_reboot) {
             ui->ShowText(true);
         }
-        start_sideload(&should_wipe_cache, TEMPORARY_INSTALL_FILE);
-        status = wait_sideload();
+        sideload_start();
+        sideload_wait(false);
+        status = sideload_install(&should_wipe_cache, TEMPORARY_INSTALL_FILE, true);
+        sideload_stop();
         if (status == INSTALL_SUCCESS && should_wipe_cache) {
             if (!wipe_cache(false, device)) {
                 status = INSTALL_ERROR;
