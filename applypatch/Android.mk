@@ -40,6 +40,32 @@ LOCAL_CFLAGS := \
     -Werror
 include $(BUILD_STATIC_LIBRARY)
 
+# libapplypatch-ota (static library)
+# ===============================
+include $(CLEAR_VARS)
+LOCAL_SRC_FILES := \
+    applypatch_old.cpp \
+    bspatch.cpp \
+    freecache.cpp \
+    imgpatch.cpp
+LOCAL_MODULE := libapplypatch-old
+LOCAL_MODULE_TAGS := eng
+LOCAL_C_INCLUDES := \
+    $(LOCAL_PATH)/include \
+    $(call project-path-for,recovery)
+LOCAL_EXPORT_C_INCLUDE_DIRS := $(LOCAL_PATH)/include
+LOCAL_STATIC_LIBRARIES := \
+    libotafault \
+    libbase \
+    libcrypto \
+    libbspatch \
+    libbz \
+    libz
+LOCAL_CFLAGS := \
+    -DZLIB_CONST \
+    -Werror
+include $(BUILD_STATIC_LIBRARY)
+
 # libimgpatch (static library)
 # ===============================
 include $(CLEAR_VARS)
