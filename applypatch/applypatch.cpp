@@ -528,7 +528,7 @@ int applypatch(const char* source_filename, const char* target_filename,
     source_file.data.clear();
     printf("source file is bad; trying copy\n");
 
-    if (LoadFileContents(CACHE_TEMP_SOURCE, &copy_file) < 0) {
+    if (LoadFileContents(CacheLocation::location().cache_temp_source().c_str(), &copy_file) < 0) {
       // fail.
       printf("failed to read copy file\n");
       return 1;
@@ -680,7 +680,7 @@ static int GenerateTarget(FileContents* source_file,
         printf("not enough free space on /cache\n");
         return 1;
       }
-      if (SaveFileContents(CACHE_TEMP_SOURCE, source_file) < 0) {
+      if (SaveFileContents(CacheLocation::location().cache_temp_source().c_str(), source_file) < 0) {
         printf("failed to back up source file\n");
         return 1;
       }
@@ -720,7 +720,7 @@ static int GenerateTarget(FileContents* source_file,
           return 1;
         }
 
-        if (SaveFileContents(CACHE_TEMP_SOURCE, source_file) < 0) {
+        if (SaveFileContents(CacheLocation::location().cache_temp_source().c_str(), source_file) < 0) {
           printf("failed to back up source file\n");
           return 1;
         }
