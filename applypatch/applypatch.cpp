@@ -62,13 +62,12 @@ int LoadFileContents(const char* filename, FileContents* file) {
     return LoadPartitionContents(filename, file);
   }
 
-  struct stat sb;
-  if (stat(filename, &sb) == -1) {
+  if (stat(filename, &file->st) == -1) {
     printf("failed to stat \"%s\": %s\n", filename, strerror(errno));
     return -1;
   }
 
-  std::vector<unsigned char> data(sb.st_size);
+  std::vector<unsigned char> data(file->st.st_size);
   unique_file f(ota_fopen(filename, "rb"));
   if (!f) {
     printf("failed to open \"%s\": %s\n", filename, strerror(errno));
@@ -185,6 +184,10 @@ static int LoadPartitionContents(const std::string& filename, FileContents* file
 
   buffer.resize(buffer_size);
   file->data = std::move(buffer);
+  // Fake some stat() info.
+  file->st.st_mode = 0644;
+  file->st.st_uid = 0;
+  file->st.st_gid = 0;
 
   return 0;
 }
@@ -210,6 +213,15 @@ int SaveFileContents(const char* filename, const FileContents* file) {
   }
   if (ota_close(fd) != 0) {
     printf("close of \"%s\" failed: %s\n", filename, strerror(errno));
+    return -1;
+  }
+
+  if (chmod(filename, file->st.st_mode) != 0) {
+    printf("chmod of \"%s\" failed: %s\n", filename, strerror(errno));
+    return -1;
+  }
+  if (chown(filename, file->st.st_uid, file->st.st_gid) != 0) {
+    printf("chown of \"%s\" failed: %s\n", filename, strerror(errno));
     return -1;
   }
 
