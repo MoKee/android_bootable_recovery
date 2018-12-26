@@ -766,10 +766,10 @@ static int GenerateTarget(FileContents* source_file,
 
     int result;
     if (use_bsdiff) {
-      result = ApplyBSDiffPatch(source_to_use->data.data(), source_to_use->data.size(), patch, 0,
+      result = ApplyBSDiffPatch(source_to_use->data.data(), source_to_use->data.size(), *patch, 0,
                                 sink, &ctx);
     } else {
-      result = ApplyImagePatch(source_to_use->data.data(), source_to_use->data.size(), patch, sink,
+      result = ApplyImagePatch(source_to_use->data.data(), source_to_use->data.size(), *patch, sink,
                                &ctx, bonus_data);
     }
 
