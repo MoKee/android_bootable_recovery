@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2007 The Android Open Source Project
+ * Copyright (C) 2019 The LineageOS Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +18,7 @@
 #include "roots.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,14 +38,39 @@
 #include <android-base/stringprintf.h>
 #include <android-base/unique_fd.h>
 #include <cryptfs.h>
+#include <cutils/fs.h>
 #include <ext4_utils/wipe.h>
 #include <fs_mgr.h>
 
 #include "mounts.h"
 
+#ifdef __bitwise
+#undef __bitwise
+#endif
+#include <blkid/blkid.h>
+
 static struct fstab* fstab = nullptr;
 
 extern struct selabel_handle* sehandle;
+
+static void write_fstab_entry(const Volume* v, FILE* file) {
+  if (v && strcmp(v->fs_type, "mtd") != 0 && strcmp(v->fs_type, "emmc") != 0 &&
+      strcmp(v->fs_type, "bml") != 0 && !fs_mgr_is_voldmanaged(v) &&
+      strncmp(v->blk_device, "/", 1) == 0 && strncmp(v->mount_point, "/", 1) == 0) {
+    fprintf(file, "%s ", v->blk_device);
+    fprintf(file, "%s ", v->mount_point);
+    fprintf(file, "%s ", v->fs_type);
+    fprintf(file, "%s 0 0\n", v->fs_options ? v->fs_options : "defaults");
+  }
+}
+
+int get_num_volumes() {
+  return fstab->num_entries;
+}
+
+Volume* get_device_volumes() {
+  return fstab->recs;
+}
 
 void load_volume_table() {
   fstab = fs_mgr_read_fstab_default();
@@ -60,17 +87,57 @@ void load_volume_table() {
     return;
   }
 
+  // Create a boring /etc/fstab so tools like Busybox work
+  FILE* file = fopen("/etc/fstab", "w");
+  if (!file) {
+    LOG(ERROR) << "Unable to create /etc/fstab";
+  }
+
   printf("recovery filesystem table\n");
   printf("=========================\n");
   for (int i = 0; i < fstab->num_entries; ++i) {
     const Volume* v = &fstab->recs[i];
     printf("  %d %s %s %s %lld\n", i, v->mount_point, v->fs_type, v->blk_device, v->length);
+    if (file) {
+      write_fstab_entry(v, file);
+    }
   }
   printf("\n");
+  if (file) {
+    fclose(file);
+  }
 }
 
 Volume* volume_for_mount_point(const std::string& mount_point) {
   return fs_mgr_get_entry_for_mount_point(fstab, mount_point);
+}
+
+Volume* get_entry_for_mount_point_detect_fs(const std::string& path) {
+  Volume* rec = fs_mgr_get_entry_for_mount_point(fstab, path);
+
+  if (rec == nullptr) {
+    return rec;
+  }
+
+  if (strcmp(rec->fs_type, "ext4") == 0 || strcmp(rec->fs_type, "f2fs") == 0 ||
+      strcmp(rec->fs_type, "vfat") == 0) {
+    char* detected_fs_type = blkid_get_tag_value(nullptr, "TYPE", rec->blk_device);
+
+    if (detected_fs_type == nullptr) {
+      return rec;
+    }
+
+    Volume* fetched_rec = rec;
+    while (rec != nullptr && strcmp(rec->fs_type, detected_fs_type) != 0) {
+      rec = fs_mgr_get_entry_for_mount_point_after(rec, fstab, path);
+    }
+
+    if (rec == nullptr) {
+      return fetched_rec;
+    }
+  }
+
+  return rec;
 }
 
 // Finds the volume specified by the given path. fs_mgr_get_entry_for_mount_point() does exact match
@@ -81,7 +148,7 @@ static Volume* volume_for_path(const char* path) {
   if (path == nullptr || path[0] == '\0') return nullptr;
   std::string str(path);
   while (true) {
-    Volume* result = fs_mgr_get_entry_for_mount_point(fstab, str);
+    Volume* result = get_entry_for_mount_point_detect_fs(str);
     if (result != nullptr || str == "/") {
       return result;
     }
@@ -91,6 +158,17 @@ static Volume* volume_for_path(const char* path) {
       str = "/";
     } else {
       str = str.substr(0, slash);
+    }
+  }
+  return nullptr;
+}
+
+Volume* volume_for_label(const char* label) {
+  int i;
+  for (i = 0; i < get_num_volumes(); i++) {
+    Volume* v = get_device_volumes() + i;
+    if (v->label && !strcmp(v->label, label)) {
+      return v;
     }
   }
   return nullptr;
@@ -117,16 +195,18 @@ int ensure_path_mounted_at(const char* path, const char* mount_point) {
     mount_point = v->mount_point;
   }
 
-  const MountedVolume* mv = find_mounted_volume_by_mount_point(mount_point);
-  if (mv != nullptr) {
-    // Volume is already mounted.
-    return 0;
+  if (!fs_mgr_is_voldmanaged(v)) {
+    const MountedVolume* mv = find_mounted_volume_by_mount_point(mount_point);
+    if (mv) {
+      // volume is already mounted
+      return 0;
+    }
   }
 
-  mkdir(mount_point, 0755);  // in case it doesn't already exist
+  fs_mkdirs(mount_point, 0755);  // in case it doesn't already exist
 
   if (strcmp(v->fs_type, "ext4") == 0 || strcmp(v->fs_type, "squashfs") == 0 ||
-      strcmp(v->fs_type, "vfat") == 0) {
+      strcmp(v->fs_type, "vfat") == 0 || strcmp(v->fs_type, "f2fs") == 0) {
     int result = mount(v->blk_device, mount_point, v->fs_type, v->flags, v->fs_options);
     if (result == -1) {
       PLOG(ERROR) << "Failed to mount " << mount_point;
@@ -139,15 +219,42 @@ int ensure_path_mounted_at(const char* path, const char* mount_point) {
   return -1;
 }
 
+int ensure_volume_mounted(Volume* v) {
+  if (v == nullptr) {
+    LOG(ERROR) << "cannot mount unknown volume";
+    return -1;
+  }
+  return ensure_path_mounted_at(v->mount_point, nullptr);
+}
+
 int ensure_path_mounted(const char* path) {
   // Mount at the default mount point.
   return ensure_path_mounted_at(path, nullptr);
 }
 
-int ensure_path_unmounted(const char* path) {
-  const Volume* v = volume_for_path(path);
+int ensure_path_unmounted(const char* path, bool detach /* = false */) {
+  const Volume* v;
+  if (memcmp(path, "/storage/", 9) == 0) {
+    char label[PATH_MAX];
+    const char* p = path + 9;
+    const char* q = strchr(p, '/');
+    memset(label, 0, sizeof(label));
+    if (q) {
+      memcpy(label, p, q - p);
+    } else {
+      strcpy(label, p);
+    }
+    v = volume_for_label(label);
+  } else {
+    v = volume_for_path(path);
+  }
+
+  return ensure_volume_unmounted(v, detach);
+}
+
+int ensure_volume_unmounted(const Volume* v, bool detach /* = false */) {
   if (v == nullptr) {
-    LOG(ERROR) << "unknown volume for path [" << path << "]";
+    LOG(ERROR) << "cannot unmount unknown volume";
     return -1;
   }
   if (strcmp(v->fs_type, "ramdisk") == 0) {
@@ -166,7 +273,7 @@ int ensure_path_unmounted(const char* path) {
     return 0;
   }
 
-  return unmount_mounted_volume(mv);
+  return (detach ? unmount_mounted_volume_detach(mv) : unmount_mounted_volume(mv));
 }
 
 static int exec_cmd(const std::vector<std::string>& args) {
@@ -267,6 +374,11 @@ int format_volume(const char* volume, const char* directory) {
                  << v->blk_device;
       return -1;
     }
+  }
+
+  if (fs_mgr_is_voldmanaged(v)) {
+    LOG(ERROR) << "can't format vold volume \"" << volume << "\"";
+    return -1;
   }
 
   if (strcmp(v->fs_type, "ext4") == 0) {
@@ -374,7 +486,12 @@ int setup_install_mounts() {
         return -1;
       }
     } else {
-      if (ensure_path_unmounted(v->mount_point) != 0) {
+      // datam must be unmounted with the detach flag to ensure that FUSE works.
+      bool detach = false;
+      if (strcmp(v->mount_point, "/data") == 0) {
+        detach = true;
+      }
+      if (ensure_volume_unmounted(v, detach) != 0) {
         LOG(ERROR) << "Failed to unmount " << v->mount_point;
         return -1;
       }

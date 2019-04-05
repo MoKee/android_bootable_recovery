@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2011 The Android Open Source Project
+ * Copyright (C) 2019 The LineageOS Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +23,78 @@
 #include <time.h>
 
 #include <string>
+#include <vector>
+
+enum menu_type_t { MT_NONE, MT_LIST, MT_GRID };
+
+class MenuItem {
+ public:
+  MenuItem() {}
+  explicit MenuItem(const std::string& text, const std::string& icon_name = "",
+                    const std::string& icon_name_sel = "")
+      : text_(text), icon_name_(icon_name), icon_name_sel_(icon_name_sel) {}
+
+  const std::string& text() const {
+    return text_;
+  }
+  const std::string& icon_name() const {
+    return icon_name_;
+  }
+  const std::string& icon_name_sel() const {
+    return icon_name_sel_;
+  }
+
+ private:
+  std::string text_;
+  std::string icon_name_;
+  std::string icon_name_sel_;
+};
+typedef std::vector<MenuItem> MenuItemVector;
+
+/*
+ * Simple representation of a (x,y) coordinate with convenience operators
+ */
+class Point {
+ public:
+  Point() : x_(0), y_(0) {}
+  Point(int x, int y) : x_(x), y_(y) {}
+  int x() const {
+    return x_;
+  }
+  int y() const {
+    return y_;
+  }
+  void x(int x) {
+    x_ = x;
+  }
+  void y(int y) {
+    y_ = y;
+  }
+
+  bool operator==(const Point& rhs) const {
+    return (x() == rhs.x() && y() == rhs.y());
+  }
+  bool operator!=(const Point& rhs) const {
+    return !(*this == rhs);
+  }
+
+  Point operator+(const Point& rhs) const {
+    Point tmp;
+    tmp.x_ = x_ + rhs.x_;
+    tmp.y_ = y_ + rhs.y_;
+    return tmp;
+  }
+  Point operator-(const Point& rhs) const {
+    Point tmp;
+    tmp.x_ = x_ - rhs.x_;
+    tmp.y_ = y_ - rhs.y_;
+    return tmp;
+  }
+
+ private:
+  int x_;
+  int y_;
+};
 
 // Abstract class for controlling the user interface during recovery.
 class RecoveryUI {
@@ -55,6 +128,8 @@ class RecoveryUI {
   // the given locale. Returns true on success.
   virtual bool Init(const std::string& locale);
 
+  virtual void Stop();
+
   // Shows a stage indicator. Called immediately after Init().
   virtual void SetStage(int current, int max) = 0;
 
@@ -87,12 +162,44 @@ class RecoveryUI {
   virtual void Print(const char* fmt, ...) __printflike(2, 3) = 0;
   virtual void PrintOnScreenOnly(const char* fmt, ...) __printflike(2, 3) = 0;
 
-  virtual void ShowFile(const char* filename) = 0;
+  virtual int ShowFile(const char* filename) = 0;
 
-  // --- key handling ---
+  virtual void Redraw() = 0;
+
+  // --- event handling ---
+
+  enum event_type_t { EVENT_TYPE_NONE, EVENT_TYPE_KEY, EVENT_TYPE_TOUCH };
+  class InputEvent {
+   public:
+    InputEvent() : type_(EVENT_TYPE_NONE), evt_({ 0 }) {}
+    explicit InputEvent(int key) : type_(EVENT_TYPE_KEY), evt_({ key }) {}
+    explicit InputEvent(const Point& pos) : type_(EVENT_TYPE_TOUCH), evt_({ 0 }) {
+      evt_.pos = pos;
+    }
+
+    event_type_t type() const {
+      return type_;
+    }
+    int key() const {
+      return evt_.key;
+    }
+    const Point& pos() const {
+      return evt_.pos;
+    }
+
+   private:
+    event_type_t type_;
+    union {
+      int key;
+      Point pos;
+    } evt_;
+  };
 
   // Waits for a key and return it. May return -1 after timeout.
-  virtual int WaitKey();
+  virtual InputEvent WaitInputEvent();
+
+  // Cancel a WaitKey()
+  virtual void CancelWaitKey();
 
   virtual bool IsKeyPressed(int key);
   virtual bool IsLongPress();
@@ -130,18 +237,40 @@ class RecoveryUI {
 
   // Display some header text followed by a menu of items, which appears at the top of the screen
   // (in place of any scrolling ui_print() output, if necessary).
-  virtual void StartMenu(const char* const* headers, const char* const* items,
-                         int initial_selection) = 0;
+  virtual void StartMenu(bool is_main, menu_type_t type, const char* const* headers,
+                         const MenuItemVector& items, int initial_selection) = 0;
 
   // Sets the menu highlight to the given index, wrapping if necessary. Returns the actual item
   // selected.
   virtual int SelectMenu(int sel) = 0;
+  virtual int SelectMenu(const Point& point) = 0;
+
+  // Scroll the view by increasing or lowering the first shown item
+  // If updown < 0, scroll up by |updown| items. If updown > 0, scroll down by |updown| items
+  // Returns the selected item, since scrolling past a selected item will change the selection to
+  // the closest on screen item
+  virtual int ScrollMenu(int updown) = 0;
 
   // Ends menu mode, resetting the text overlay so that ui_print() statements will be displayed.
   virtual void EndMenu() = 0;
 
+  // Notify of volume state change
+  void onVolumeChanged() {
+    volumes_changed_ = 1;
+  }
+  bool VolumesChanged();
+
+  virtual bool MenuShowing() const = 0;
+  virtual bool MenuScrollable() const = 0;
+  virtual int MenuItemStart() const = 0;
+  virtual int MenuItemHeight() const = 0;
+
  protected:
   void EnqueueKey(int key_code);
+  void EnqueueTouch(const Point& pos);
+
+  std::string android_version_;
+  std::string mk_version_;
 
   // The normal and dimmed brightness percentages (default: 50 and 25, which means 50% and 25% of
   // the max_brightness). Because the absolute values may vary across devices. These two values can
@@ -151,7 +280,7 @@ class RecoveryUI {
   std::string brightness_file_;
   std::string max_brightness_file_;
 
-  // Whether we should listen for touch inputs (default: false).
+  // Whether we should listen for touch inputs (default: true).
   bool touch_screen_allowed_;
 
  private:
@@ -172,8 +301,11 @@ class RecoveryUI {
   const int kTouchLowThreshold;
   const int kTouchHighThreshold;
 
+  void OnTouchDeviceDetected(int fd);
   void OnKeyDetected(int key_code);
-  void OnTouchDetected(int dx, int dy);
+  void OnTouchPress();
+  void OnTouchTrack();
+  void OnTouchRelease();
   int OnInputEvent(int fd, uint32_t epevents);
   void ProcessKey(int key_code, int updown);
 
@@ -185,14 +317,15 @@ class RecoveryUI {
   bool InitScreensaver();
 
   // Key event input queue
-  pthread_mutex_t key_queue_mutex;
-  pthread_cond_t key_queue_cond;
-  int key_queue[256], key_queue_len;
-  char key_pressed[KEY_MAX + 1];  // under key_queue_mutex
-  int key_last_down;              // under key_queue_mutex
-  bool key_long_press;            // under key_queue_mutex
-  int key_down_count;             // under key_queue_mutex
-  bool enable_reboot;             // under key_queue_mutex
+  pthread_mutex_t event_queue_mutex;
+  pthread_cond_t event_queue_cond;
+  InputEvent event_queue[256];
+  int event_queue_len;
+  char key_pressed[KEY_MAX + 1];  // under event_queue_mutex
+  int key_last_down;              // under event_queue_mutex
+  bool key_long_press;            // under event_queue_mutex
+  int key_down_count;             // under event_queue_mutex
+  bool enable_reboot;             // under event_queue_mutex
   int rel_sum;
 
   int consecutive_power_keys;
@@ -203,17 +336,32 @@ class RecoveryUI {
   bool has_down_key;
   bool has_touch_screen;
 
+  struct vkey_t {
+    bool inside(const Point& p) const {
+      return (p.x() >= min_.x() && p.x() < max_.x() && p.y() >= min_.y() && p.y() < max_.y());
+    }
+
+    int keycode;
+    Point min_;
+    Point max_;
+  };
+
   // Touch event related variables. See the comments in RecoveryUI::OnInputEvent().
   int touch_slot_;
-  int touch_X_;
-  int touch_Y_;
-  int touch_start_X_;
-  int touch_start_Y_;
   bool touch_finger_down_;
-  bool touch_swiping_;
+  bool touch_saw_x_;
+  bool touch_saw_y_;
+  bool touch_reported_;
+  Point touch_pos_;
+  Point touch_start_;
+  Point touch_track_;
+  bool has_swiped_;
+  std::vector<vkey_t> virtual_keys_;
   bool is_bootreason_recovery_ui_;
 
   pthread_t input_thread_;
+
+  bool volumes_changed_;
 
   ScreensaverState screensaver_state_;
 

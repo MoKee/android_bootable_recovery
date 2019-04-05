@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -40,7 +41,9 @@ struct fd_info {
   ev_callback cb;
 };
 
+static ev_callback saved_input_cb;
 static int g_epoll_fd;
+static int g_inotify_fd;
 static epoll_event polledevents[MAX_DEVICES + MAX_MISC_FDS];
 static int npolledevents;
 
@@ -54,10 +57,85 @@ static bool test_bit(size_t bit, unsigned long* array) { // NOLINT
     return (array[bit/BITS_PER_LONG] & (1UL << (bit % BITS_PER_LONG))) != 0;
 }
 
+static int inotify_cb(int fd, __unused uint32_t epevents) {
+  struct inotify_event* pevent;
+  char* buf;
+  DIR* dir;
+  size_t event_len;
+  size_t offset;
+
+  if (saved_input_cb == nullptr) return -1;
+
+  // The inotify will put one or several complete events.
+  // Should not read part of one event.
+  int ret = ioctl(fd, FIONREAD, &event_len);
+  if (ret != 0) return -1;
+
+  dir = opendir("/dev/input");
+  if (dir == nullptr) return -1;
+
+  buf = (char*)malloc(event_len);
+  if (buf == nullptr) {
+    closedir(dir);
+    return -1;
+  }
+
+  ret = read(fd, buf, event_len);
+  if (ret != (int)event_len) {
+    free(buf);
+    closedir(dir);
+    return -1;
+  }
+
+  offset = 0;
+  while (offset < event_len) {
+    pevent = (struct inotify_event*)(buf + offset);
+    if (offset + sizeof(inotify_event) + pevent->len > event_len) {
+      // The pevent->len is too large and buffer will over flow.
+      // In general, should not happen, just make more stable.
+      free(buf);
+      closedir(dir);
+      return -1;
+    }
+    offset += sizeof(inotify_event) + pevent->len;
+
+    pevent->name[pevent->len] = '\0';
+    if (strncmp(pevent->name, "event", 5)) continue;
+
+    int dfd = openat(dirfd(dir), pevent->name, O_RDONLY);
+    if (dfd == -1) break;
+
+    // Read the evbits of the input device.
+    unsigned long ev_bits[BITS_TO_LONGS(EV_MAX)];
+    if (ioctl(dfd, EVIOCGBIT(0, sizeof(ev_bits)), ev_bits) == -1) {
+      close(dfd);
+      continue;
+    }
+    // We assume that only EV_KEY, EV_REL, and EV_SW event types are ever needed.
+    if (!test_bit(EV_KEY, ev_bits) && !test_bit(EV_REL, ev_bits) && !test_bit(EV_SW, ev_bits)) {
+      close(dfd);
+      continue;
+    }
+
+    // Only add, we assume the user will not plug out and plug in USB device again and again :)
+    ev_add_fd(dfd, saved_input_cb);
+  }
+
+  free(buf);
+  closedir(dir);
+  return 0;
+}
+
 int ev_init(ev_callback input_cb, bool allow_touch_inputs) {
   g_epoll_fd = epoll_create(MAX_DEVICES + MAX_MISC_FDS);
   if (g_epoll_fd == -1) {
     return -1;
+  }
+
+  g_inotify_fd = inotify_init();
+  if (g_inotify_fd >= 0) {
+    inotify_add_watch(g_inotify_fd, "/dev/input", IN_CREATE);
+    ev_add_fd(g_inotify_fd, inotify_cb);
   }
 
   bool epollctlfail = false;
@@ -78,9 +156,14 @@ int ev_init(ev_callback input_cb, bool allow_touch_inputs) {
         continue;
       }
 
-      // We assume that only EV_KEY, EV_REL, and EV_SW event types are ever needed. EV_ABS is also
+      // We assume that only EV_KEY, and EV_SW event types are ever needed. EV_ABS is also
       // allowed if allow_touch_inputs is set.
-      if (!test_bit(EV_KEY, ev_bits) && !test_bit(EV_REL, ev_bits) && !test_bit(EV_SW, ev_bits)) {
+      // EV_REL should be enabled explicitly in device tree.
+      if (!test_bit(EV_KEY, ev_bits) &&
+#ifdef BOARD_RECOVERY_NEEDS_REL_INPUT
+          !test_bit(EV_REL, ev_bits) &&
+#endif
+          !test_bit(EV_SW, ev_bits)) {
         if (!allow_touch_inputs || !test_bit(EV_ABS, ev_bits)) {
           close(fd);
           continue;
@@ -97,7 +180,7 @@ int ev_init(ev_callback input_cb, bool allow_touch_inputs) {
       }
 
       ev_fdinfo[ev_count].fd = fd;
-      ev_fdinfo[ev_count].cb = std::move(input_cb);
+      ev_fdinfo[ev_count].cb = input_cb;
       ev_count++;
       ev_dev_count++;
       if (ev_dev_count == MAX_DEVICES) break;
@@ -111,6 +194,8 @@ int ev_init(ev_callback input_cb, bool allow_touch_inputs) {
     g_epoll_fd = -1;
     return -1;
   }
+
+  saved_input_cb = input_cb;
 
   return 0;
 }
@@ -144,6 +229,7 @@ void ev_exit(void) {
     }
     ev_misc_count = 0;
     ev_dev_count = 0;
+    saved_input_cb = nullptr;
     close(g_epoll_fd);
 }
 
@@ -234,7 +320,8 @@ void ev_iterate_available_keys(const std::function<void(int)>& f) {
     }
 }
 
-void ev_iterate_touch_inputs(const std::function<void(int)>& action) {
+void ev_iterate_touch_inputs(const std::function<void(int)>& touch_device_detected,
+                             const std::function<void(int)>& key_detected) {
   for (size_t i = 0; i < ev_dev_count; ++i) {
     // Use unsigned long to match ioctl's parameter type.
     unsigned long ev_bits[BITS_TO_LONGS(EV_MAX)] = {};  // NOLINT
@@ -250,9 +337,11 @@ void ev_iterate_touch_inputs(const std::function<void(int)>& action) {
       continue;
     }
 
+    touch_device_detected(ev_fdinfo[i].fd);
+
     for (int key_code = 0; key_code <= KEY_MAX; ++key_code) {
       if (test_bit(key_code, key_bits)) {
-        action(key_code);
+        key_detected(key_code);
       }
     }
   }

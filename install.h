@@ -20,13 +20,20 @@
 #include <string>
 #include <ziparchive/zip_archive.h>
 
-enum { INSTALL_SUCCESS, INSTALL_ERROR, INSTALL_CORRUPT, INSTALL_NONE, INSTALL_SKIPPED,
-        INSTALL_RETRY };
+enum {
+  INSTALL_SUCCESS,
+  INSTALL_ERROR,
+  INSTALL_CORRUPT,
+  INSTALL_NONE,
+  INSTALL_SKIPPED,
+  INSTALL_RETRY,
+  INSTALL_UNVERIFIED
+};
 
 // Installs the given update package. If INSTALL_SUCCESS is returned and *wipe_cache is true on
 // exit, caller should wipe the cache partition.
 int install_package(const std::string& package, bool* wipe_cache, const std::string& install_file,
-                    bool needs_mount, int retry_count);
+                    bool needs_mount, int retry_count, bool verify);
 
 // Verify the package by ota keys. Return true if the package is verified successfully,
 // otherwise return false.
@@ -39,5 +46,7 @@ bool read_metadata_from_package(ZipArchiveHandle zip, std::string* metadata);
 // Verifies the compatibility info in a Treble-compatible package. Returns true directly if the
 // entry doesn't exist.
 bool verify_package_compatibility(ZipArchiveHandle package_zip);
+
+void set_perf_mode(bool enable);
 
 #endif  // RECOVERY_INSTALL_H_

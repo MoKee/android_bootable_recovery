@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2007 The Android Open Source Project
+ * Copyright (C) 2019 The LineageOS Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,5 +25,6 @@ bool scan_mounted_volumes();
 MountedVolume* find_mounted_volume_by_mount_point(const char* mount_point);
 
 int unmount_mounted_volume(MountedVolume* volume);
+int unmount_mounted_volume_detach(MountedVolume* volume);
 
 #endif

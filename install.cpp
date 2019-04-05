@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2007 The Android Open Source Project
+ * Copyright (C) 2019 The LineageOS Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +22,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <setjmp.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -47,6 +49,8 @@
 #include <android-base/strings.h>
 #include <vintf/VintfObjectRecovery.h>
 #include <ziparchive/zip_archive.h>
+
+#include <cutils/properties.h>
 
 #include "common.h"
 #include "otautil/SysUtil.h"
@@ -122,8 +126,6 @@ static void read_source_target_build(ZipArchiveHandle zip, std::vector<std::stri
     }
   }
 }
-
-#ifdef AB_OTA_UPDATER
 
 // Parses the metadata of the OTA package in |zip| and checks whether we are
 // allowed to accept this A/B package. Downgrading is not allowed unless
@@ -213,9 +215,9 @@ static int check_newer_ab_build(ZipArchiveHandle zip) {
   return 0;
 }
 
-int update_binary_command(const std::string& package, ZipArchiveHandle zip,
-                          const std::string& binary_path, int /* retry_count */, int status_fd,
-                          std::vector<std::string>* cmd) {
+int update_binary_command_ab(const std::string& package, ZipArchiveHandle zip,
+                             const std::string& binary_path, int /* retry_count */, int status_fd,
+                             std::vector<std::string>* cmd) {
   CHECK(cmd != nullptr);
   int ret = check_newer_ab_build(zip);
   if (ret != 0) {
@@ -258,11 +260,9 @@ int update_binary_command(const std::string& package, ZipArchiveHandle zip,
   return 0;
 }
 
-#else  // !AB_OTA_UPDATER
-
-int update_binary_command(const std::string& package, ZipArchiveHandle zip,
-                          const std::string& binary_path, int retry_count, int status_fd,
-                          std::vector<std::string>* cmd) {
+int update_binary_command_legacy(const std::string& package, ZipArchiveHandle zip,
+                                 const std::string& binary_path, int retry_count, int status_fd,
+                                 std::vector<std::string>* cmd) {
   CHECK(cmd != nullptr);
 
   // On traditional updates we extract the update binary from the package.
@@ -299,7 +299,6 @@ int update_binary_command(const std::string& package, ZipArchiveHandle zip,
   }
   return 0;
 }
-#endif  // !AB_OTA_UPDATER
 
 static void log_max_temperature(int* max_temperature, const std::atomic<bool>& logger_finished) {
   CHECK(max_temperature != nullptr);
@@ -311,23 +310,43 @@ static void log_max_temperature(int* max_temperature, const std::atomic<bool>& l
   }
 }
 
+static jmp_buf jb;
+static void sig_bus(int) {
+  longjmp(jb, 1);
+}
+
 // If the package contains an update binary, extract it and run it.
 static int try_update_binary(const std::string& package, ZipArchiveHandle zip, bool* wipe_cache,
                              std::vector<std::string>* log_buffer, int retry_count,
                              int* max_temperature) {
   read_source_target_build(zip, log_buffer);
 
+  int ret;
   int pipefd[2];
   pipe(pipefd);
 
   std::vector<std::string> args;
+  bool ab_ota = false;
+
 #ifdef AB_OTA_UPDATER
-  int ret = update_binary_command(package, zip, "/sbin/update_engine_sideload", retry_count,
-                                  pipefd[1], &args);
-#else
-  int ret = update_binary_command(package, zip, "/tmp/update-binary", retry_count, pipefd[1],
-                                  &args);
+  // A/B updates contain a payload.bin and a text file describing the payload.
+  // We check for this file to see whether the update package has to be flashed using update_engine
+  // or if it's a traditional package with an updater-script.
+  static constexpr const char* AB_OTA_PAYLOAD_PROPERTIES = "payload_properties.txt";
+  ZipString property_name(AB_OTA_PAYLOAD_PROPERTIES);
+  ZipEntry properties_entry;
+  if (FindEntry(zip, property_name, &properties_entry) == 0) {
+    ab_ota = true;
+  }
 #endif
+
+  if (ab_ota) {
+    ret = update_binary_command_ab(package, zip, "/sbin/update_engine_sideload", retry_count,
+                                   pipefd[1], &args);
+  } else {
+    ret = update_binary_command_legacy(package, zip, "/tmp/update-binary", retry_count, pipefd[1],
+                                       &args);
+  }
   if (ret) {
     close(pipefd[0]);
     close(pipefd[1]);
@@ -561,14 +580,30 @@ bool verify_package_compatibility(ZipArchiveHandle package_zip) {
   return false;
 }
 
-static int really_install_package(const std::string& path, bool* wipe_cache, bool needs_mount,
+static int really_install_package(std::string path, bool* wipe_cache, bool needs_mount,
                                   std::vector<std::string>* log_buffer, int retry_count,
-                                  int* max_temperature) {
+                                  bool verify, int* max_temperature) {
   ui->SetBackground(RecoveryUI::INSTALLING_UPDATE);
   ui->Print("Finding update package...\n");
   // Give verification half the progress bar...
   ui->SetProgressType(RecoveryUI::DETERMINATE);
   ui->ShowProgress(VERIFICATION_PROGRESS_FRACTION, VERIFICATION_PROGRESS_TIME);
+
+  // Resolve symlink in case legacy /sdcard path is used
+  // Requires: symlink uses absolute path
+  if (path.size() > 1) {
+    size_t root_pos = path.find('/', 1);
+    if (root_pos != std::string::npos) {
+      char link_path[PATH_MAX];
+      ssize_t link_len;
+      memset(link_path, 0, sizeof(link_path));
+      link_len = readlink(path.substr(0, root_pos).c_str(), link_path, sizeof(link_path) - 1);
+      if (link_len > 0) {
+        path = link_path + path.substr(root_pos);
+      }
+    }
+  }
+
   LOG(INFO) << "Update location: " << path;
 
   // Map the update package into memory.
@@ -590,9 +625,11 @@ static int really_install_package(const std::string& path, bool* wipe_cache, boo
   }
 
   // Verify package.
-  if (!verify_package(map.addr, map.length)) {
+  set_perf_mode(true);
+  if (verify && !verify_package(map.addr, map.length)) {
     log_buffer->push_back(android::base::StringPrintf("error: %d", kZipVerificationFailure));
-    return INSTALL_CORRUPT;
+    set_perf_mode(false);
+    return INSTALL_UNVERIFIED;
   }
 
   // Try to open the package.
@@ -603,6 +640,7 @@ static int really_install_package(const std::string& path, bool* wipe_cache, boo
     log_buffer->push_back(android::base::StringPrintf("error: %d", kZipOpenFailure));
 
     CloseArchive(zip);
+    set_perf_mode(false);
     return INSTALL_CORRUPT;
   }
 
@@ -624,11 +662,12 @@ static int really_install_package(const std::string& path, bool* wipe_cache, boo
   ui->Print("\n");
 
   CloseArchive(zip);
+  set_perf_mode(false);
   return result;
 }
 
 int install_package(const std::string& path, bool* wipe_cache, const std::string& install_file,
-                    bool needs_mount, int retry_count) {
+                    bool needs_mount, int retry_count, bool verify) {
   CHECK(!path.empty());
   CHECK(!install_file.empty());
   CHECK(wipe_cache != nullptr);
@@ -645,7 +684,7 @@ int install_package(const std::string& path, bool* wipe_cache, const std::string
     LOG(ERROR) << "failed to set up expected mounts for install; aborting";
     result = INSTALL_ERROR;
   } else {
-    result = really_install_package(path, wipe_cache, needs_mount, &log_buffer, retry_count,
+    result = really_install_package(path, wipe_cache, needs_mount, &log_buffer, retry_count, verify,
                                     &max_temperature);
   }
 
@@ -715,14 +754,29 @@ bool verify_package(const unsigned char* package_data, size_t package_size) {
   // Verify package.
   ui->Print("Verifying update package...\n");
   auto t0 = std::chrono::system_clock::now();
-  int err = verify_file(package_data, package_size, loadedKeys,
-                        std::bind(&RecoveryUI::SetProgress, ui, std::placeholders::_1));
-  std::chrono::duration<double> duration = std::chrono::system_clock::now() - t0;
-  ui->Print("Update package verification took %.1f s (result %d).\n", duration.count(), err);
+  int err;
+  // Because we mmap() the update file which is backed by FUSE, we get
+  // SIGBUS when the host aborts the transfer.  We handle this by using
+  // setjmp/longjmp.
+  signal(SIGBUS, sig_bus);
+  if (setjmp(jb) == 0) {
+    err = verify_file(package_data, package_size, loadedKeys,
+                      std::bind(&RecoveryUI::SetProgress, ui, std::placeholders::_1));
+    std::chrono::duration<double> duration = std::chrono::system_clock::now() - t0;
+    ui->Print("Update package verification took %.1f s (result %d).\n", duration.count(), err);
+  } else {
+    err = VERIFY_FAILURE;
+  }
+  signal(SIGBUS, SIG_DFL);
+
   if (err != VERIFY_SUCCESS) {
     LOG(ERROR) << "Signature verification failed";
     LOG(ERROR) << "error: " << kZipVerificationFailure;
     return false;
   }
   return true;
+}
+
+void set_perf_mode(bool enable) {
+  property_set("recovery.perf.mode", enable ? "1" : "0");
 }
