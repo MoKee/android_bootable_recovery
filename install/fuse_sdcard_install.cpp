@@ -97,12 +97,15 @@ static std::string BrowseDirectory(const std::string& path, Device* device, Reco
     if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
       return "";
     }
-
-    const std::string& item = entries[chosen_item];
-    if (chosen_item == 0) {
-      // Go up but continue browsing (if the caller is BrowseDirectory).
+    if (chosen_item == Device::kGoHome) {
+      return "@";
+    }
+    if (chosen_item == Device::kGoBack || chosen_item == 0) {
+      // Go up but continue browsing (if the caller is browse_directory).
       return "";
     }
+
+    const std::string& item = entries[chosen_item];
 
     std::string new_path = path + "/" + item;
     if (new_path.back() == '/') {
@@ -133,13 +136,17 @@ static bool StartSdcardFuse(const std::string& path) {
   return run_fuse_sideload(std::move(file_data_reader)) == 0;
 }
 
-int ApplyFromSdcard(Device* device, RecoveryUI* ui) {
+int ApplyFromSdcard(Device* device, RecoveryUI* ui,
+                    const std::function<bool(Device*)>& ask_to_continue_unverified_fn) {
   if (ensure_path_mounted(SDCARD_ROOT) != 0) {
     LOG(ERROR) << "\n-- Couldn't mount " << SDCARD_ROOT << ".\n";
     return INSTALL_ERROR;
   }
 
   std::string path = BrowseDirectory(SDCARD_ROOT, device, ui);
+  if (path == "@") {
+    return INSTALL_NONE;
+  }
   if (path.empty()) {
     LOG(ERROR) << "\n-- No package file selected.\n";
     ensure_path_unmounted(SDCARD_ROOT);
@@ -184,7 +191,12 @@ int ApplyFromSdcard(Device* device, RecoveryUI* ui) {
       }
     }
 
-    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, false, false, 0 /*retry_count*/, ui);
+    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, false, false, 0 /*retry_count*/,
+                             true /* verify */, ui);
+    if (result == INSTALL_UNVERIFIED && ask_to_continue_unverified_fn(device)) {
+      result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, false, false, 0 /*retry_count*/,
+                               false /* verify */, ui);
+    }
     break;
   }
 

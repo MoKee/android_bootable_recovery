@@ -76,7 +76,6 @@ bool ReadMetadataFromPackage(ZipArchiveHandle zip, std::map<std::string, std::st
   ZipString path(METADATA_PATH);
   ZipEntry entry;
   if (FindEntry(zip, path, &entry) != 0) {
-    LOG(ERROR) << "Failed to find " << METADATA_PATH;
     return false;
   }
 
@@ -329,20 +328,11 @@ static int try_update_binary(const std::string& package, ZipArchiveHandle zip, b
                              std::vector<std::string>* log_buffer, int retry_count,
                              int* max_temperature, RecoveryUI* ui) {
   std::map<std::string, std::string> metadata;
-  if (!ReadMetadataFromPackage(zip, &metadata)) {
-    LOG(ERROR) << "Failed to parse metadata in the zip file";
-    return INSTALL_CORRUPT;
+  bool is_ab_ota = false;
+  if (ReadMetadataFromPackage(zip, &metadata)) {
+    ReadSourceTargetBuild(metadata, log_buffer);
+    if (CheckPackageMetadata(metadata, OtaType::AB) == 0) is_ab_ota = true;
   }
-
-  bool is_ab = android::base::GetBoolProperty("ro.build.ab_update", false);
-  // Verifies against the metadata in the package first.
-  if (int check_status = is_ab ? CheckPackageMetadata(metadata, OtaType::AB) : 0;
-      check_status != 0) {
-    log_buffer->push_back(android::base::StringPrintf("error: %d", kUpdateBinaryCommandFailure));
-    return check_status;
-  }
-
-  ReadSourceTargetBuild(metadata, log_buffer);
 
   // The updater in child process writes to the pipe to communicate with recovery.
   android::base::unique_fd pipe_read, pipe_write;
@@ -387,8 +377,8 @@ static int try_update_binary(const std::string& package, ZipArchiveHandle zip, b
 
   std::vector<std::string> args;
   if (int update_status =
-          is_ab ? SetUpAbUpdateCommands(package, zip, pipe_write.get(), &args)
-                : SetUpNonAbUpdateCommands(package, zip, retry_count, pipe_write.get(), &args);
+          is_ab_ota ? SetUpAbUpdateCommands(package, zip, pipe_write.get(), &args)
+                    : SetUpNonAbUpdateCommands(package, zip, retry_count, pipe_write.get(), &args);
       update_status != 0) {
     log_buffer->push_back(android::base::StringPrintf("error: %d", kUpdateBinaryCommandFailure));
     return update_status;
@@ -573,7 +563,7 @@ bool verify_package_compatibility(ZipArchiveHandle package_zip) {
 
 static int really_install_package(const std::string& path, bool* wipe_cache, bool needs_mount,
                                   std::vector<std::string>* log_buffer, int retry_count,
-                                  int* max_temperature, RecoveryUI* ui) {
+                                  bool verify, int* max_temperature, RecoveryUI* ui) {
   ui->SetBackground(RecoveryUI::INSTALLING_UPDATE);
   ui->Print("Finding update package...\n");
   // Give verification half the progress bar...
@@ -600,9 +590,9 @@ static int really_install_package(const std::string& path, bool* wipe_cache, boo
   }
 
   // Verify package.
-  if (!verify_package(package.get(), ui)) {
+  if (verify && !verify_package(package.get(), ui)) {
     log_buffer->push_back(android::base::StringPrintf("error: %d", kZipVerificationFailure));
-    return INSTALL_CORRUPT;
+    return INSTALL_UNVERIFIED;
   }
 
   // Try to open the package.
@@ -633,7 +623,7 @@ static int really_install_package(const std::string& path, bool* wipe_cache, boo
 }
 
 int install_package(const std::string& path, bool should_wipe_cache, bool needs_mount,
-                    int retry_count, RecoveryUI* ui) {
+                    int retry_count, bool verify, RecoveryUI* ui) {
   CHECK(!path.empty());
 
   auto start = std::chrono::system_clock::now();
@@ -649,7 +639,7 @@ int install_package(const std::string& path, bool should_wipe_cache, bool needs_
   } else {
     bool updater_wipe_cache = false;
     result = really_install_package(path, &updater_wipe_cache, needs_mount, &log_buffer,
-                                    retry_count, &max_temperature, ui);
+                                    retry_count, verify, &max_temperature, ui);
     should_wipe_cache = should_wipe_cache || updater_wipe_cache;
   }
 

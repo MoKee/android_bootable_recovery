@@ -52,7 +52,11 @@ static bool EraseVolume(const char* volume, RecoveryUI* ui, bool convert_fbe) {
 
   ui->Print("Formatting %s...\n", volume);
 
-  ensure_path_unmounted(volume);
+  Volume* vol = volume_for_mount_point(volume);
+  if (ensure_volume_unmounted(vol->blk_device) == -1) {
+    PLOG(ERROR) << "Failed to unmount volume!";
+    return false;
+  }
 
   int result;
   if (is_data && convert_fbe) {
@@ -119,5 +123,16 @@ bool WipeData(Device* device, bool convert_fbe) {
     success &= device->PostWipeData();
   }
   ui->Print("Data wipe %s.\n", success ? "complete" : "failed");
+  return success;
+}
+
+bool WipeSystem(RecoveryUI* ui, const std::function<bool()>& confirm_func) {
+  if (confirm_func && !confirm_func()) {
+    return false;
+  }
+
+  ui->Print("\n-- Wiping system...\n");
+  bool success = EraseVolume(get_system_root().c_str(), ui, false);
+  ui->Print("System wipe %s.\n", success ? "complete" : "failed");
   return success;
 }

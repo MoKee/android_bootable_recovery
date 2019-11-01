@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2011 The Android Open Source Project
+ * Copyright (C) 2019 The LineageOS Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +27,51 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+/*
+ * Simple representation of a (x,y) coordinate with convenience operators
+ */
+class Point {
+ public:
+  Point() : x_(0), y_(0) {}
+  Point(int x, int y) : x_(x), y_(y) {}
+  int x() const {
+    return x_;
+  }
+  int y() const {
+    return y_;
+  }
+  void x(int x) {
+    x_ = x;
+  }
+  void y(int y) {
+    y_ = y;
+  }
+
+  bool operator==(const Point& rhs) const {
+    return (x() == rhs.x() && y() == rhs.y());
+  }
+  bool operator!=(const Point& rhs) const {
+    return !(*this == rhs);
+  }
+
+  Point operator+(const Point& rhs) const {
+    Point tmp;
+    tmp.x_ = x_ + rhs.x_;
+    tmp.y_ = y_ + rhs.y_;
+    return tmp;
+  }
+  Point operator-(const Point& rhs) const {
+    Point tmp;
+    tmp.x_ = x_ - rhs.x_;
+    tmp.y_ = y_ - rhs.y_;
+    return tmp;
+  }
+
+ private:
+  int x_;
+  int y_;
+};
 
 // Abstract class for controlling the user interface during recovery.
 class RecoveryUI {
@@ -63,6 +109,8 @@ class RecoveryUI {
   // Initializes the object; called before anything else. UI texts will be initialized according
   // to the given locale. Returns true on success.
   virtual bool Init(const std::string& locale);
+
+  virtual void Stop();
 
   virtual std::string GetLocale() const = 0;
 
@@ -108,6 +156,7 @@ class RecoveryUI {
   // KeyError::INTERRUPTED on a key interrupt.
   virtual int WaitKey();
 
+  virtual void CancelWaitKey();
   // Wakes up the UI if it is waiting on key input, causing WaitKey to return KeyError::INTERRUPTED.
   virtual void InterruptKey();
 
@@ -201,7 +250,7 @@ class RecoveryUI {
   std::string brightness_file_;
   std::string max_brightness_file_;
 
-  // Whether we should listen for touch inputs (default: false).
+  // Whether we should listen for touch inputs (default: true).
   bool touch_screen_allowed_;
 
   bool fastbootd_logo_enabled_;
@@ -218,8 +267,9 @@ class RecoveryUI {
   const int touch_low_threshold_;
   const int touch_high_threshold_;
 
+  void OnTouchDeviceDetected(int fd);
   void OnKeyDetected(int key_code);
-  void OnTouchDetected(int dx, int dy);
+  void OnTouchEvent();
   int OnInputEvent(int fd, uint32_t epevents);
   void ProcessKey(int key_code, int updown);
   void TimeKey(int key_code, int count);
@@ -248,14 +298,19 @@ class RecoveryUI {
   bool has_down_key;
   bool has_touch_screen;
 
+  struct vkey_t {
+    int keycode;
+    Point min_;
+    Point max_;
+  };
+
   // Touch event related variables. See the comments in RecoveryUI::OnInputEvent().
   int touch_slot_;
-  int touch_X_;
-  int touch_Y_;
-  int touch_start_X_;
-  int touch_start_Y_;
+  Point touch_pos_;
+  Point touch_start_;
   bool touch_finger_down_;
   bool touch_swiping_;
+  std::vector<vkey_t> virtual_keys_;
   bool is_bootreason_recovery_ui_;
 
   std::thread input_thread_;

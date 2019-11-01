@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2015 The Android Open Source Project
+ * Copyright (C) 2019 The LineageOS Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,11 +29,13 @@
 static std::vector<std::pair<std::string, Device::BuiltinAction>> g_menu_actions{
   { "Reboot system now", Device::REBOOT },
   { "Reboot to bootloader", Device::REBOOT_BOOTLOADER },
+  { "Reboot to recovery", Device::REBOOT_RECOVERY },
   { "Enter fastboot", Device::ENTER_FASTBOOT },
   { "Apply update from ADB", Device::APPLY_ADB_SIDELOAD },
   { "Apply update from SD card", Device::APPLY_SDCARD },
   { "Wipe data/factory reset", Device::WIPE_DATA },
   { "Wipe cache partition", Device::WIPE_CACHE },
+  { "Wipe system partition", Device::WIPE_SYSTEM },
   { "Mount /system", Device::MOUNT_SYSTEM },
   { "View recovery logs", Device::VIEW_RECOVERY_LOGS },
   { "Run graphics test", Device::RUN_GRAPHICS_TEST },
@@ -77,17 +80,33 @@ int Device::HandleMenuKey(int key, bool visible) {
   }
 
   switch (key) {
+    case KEY_RIGHTSHIFT:
     case KEY_DOWN:
     case KEY_VOLUMEDOWN:
+    case KEY_MENU:
       return kHighlightDown;
 
     case KEY_UP:
     case KEY_VOLUMEUP:
+    case KEY_SEARCH:
       return kHighlightUp;
 
     case KEY_ENTER:
     case KEY_POWER:
+    case BTN_MOUSE:
+    case KEY_SEND:
       return kInvokeItem;
+
+    case KEY_HOME:
+    case KEY_HOMEPAGE:
+      return kGoHome;
+
+    case KEY_BACKSPACE:
+    case KEY_BACK:
+      return kGoBack;
+
+    case KEY_REFRESH:
+      return kRefresh;
 
     default:
       // If you have all of the above buttons, any other buttons

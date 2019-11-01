@@ -313,6 +313,8 @@ ScreenRecoveryUI::ScreenRecoveryUI(bool scrollable_menu)
       animation_fps_(
           android::base::GetIntProperty("ro.recovery.ui.animation_fps", kDefaultAnimationFps)),
       density_(static_cast<float>(android::base::GetIntProperty("ro.sf.lcd_density", 160)) / 160.f),
+      blank_unblank_on_init_(
+          android::base::GetBoolProperty("ro.recovery.ui.blank_unblank_on_init", false)),
       current_icon_(NONE),
       current_frame_(0),
       intro_done_(false),
@@ -876,6 +878,11 @@ bool ScreenRecoveryUI::Init(const std::string& locale) {
     return false;
   }
 
+  if (blank_unblank_on_init_) {
+    gr_fb_blank(true);
+    gr_fb_blank(false);
+  }
+
   // Are we portrait or landscape?
   layout_ = (gr_fb_width() > gr_fb_height()) ? LANDSCAPE : PORTRAIT;
   // Are we the large variant of our base layout?
@@ -920,6 +927,11 @@ bool ScreenRecoveryUI::Init(const std::string& locale) {
 
 std::string ScreenRecoveryUI::GetLocale() const {
   return locale_;
+}
+
+void ScreenRecoveryUI::Stop() {
+  RecoveryUI::Stop();
+  gr_fb_blank(true);
 }
 
 void ScreenRecoveryUI::LoadAnimation() {
@@ -1232,9 +1244,23 @@ size_t ScreenRecoveryUI::ShowMenu(std::unique_ptr<Menu>&& menu, bool menu_only,
           break;
         case Device::kNoAction:
           break;
+        case Device::kRefresh:
+          chosen_item = Device::kRefresh;
+          break;
+        case Device::kGoBack:
+          chosen_item = Device::kGoBack;
+          break;
+        case Device::kGoHome:
+          chosen_item = Device::kGoHome;
+          break;
       }
     } else if (!menu_only) {
       chosen_item = action;
+    }
+
+    if (chosen_item == Device::kGoBack || chosen_item == Device::kGoHome ||
+        chosen_item == Device::kRefresh) {
+      break;
     }
   }
 

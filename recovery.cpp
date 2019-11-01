@@ -128,6 +128,10 @@ bool is_ro_debuggable() {
     return android::base::GetBoolProperty("ro.debuggable", false);
 }
 
+std::string get_build_type() {
+  return android::base::GetProperty("ro.build.type", "");
+}
+
 // Clear the recovery command and prepare to boot a (hopefully working) system,
 // copy our log file to cache as well (for the system to read). This function is
 // idempotent: call it as many times as you like.
@@ -171,6 +175,15 @@ static bool yes_no(Device* device, const char* question1, const char* question2)
       headers, items, 0, true,
       std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
   return (chosen_item == 1);
+}
+
+static bool ask_to_continue_unverified_fn(Device* device) {
+  if (get_build_type() == "user") {
+    return false;
+  } else {
+    ui->SetProgressType(RecoveryUI::EMPTY);
+    return yes_no(device, "Signature verification failed", "Install anyway?");
+  }
 }
 
 static bool ask_to_wipe_data(Device* device) {
@@ -424,8 +437,10 @@ static void choose_recovery_file(Device* device) {
     if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
       break;
     }
-    if (entries[chosen_item] == "Back") break;
-
+    if (chosen_item == Device::kGoHome || chosen_item == Device::kGoBack ||
+        chosen_item == entries.size() - 1) {
+      break;
+    }
     ui->ShowFile(entries[chosen_item]);
   }
 }
@@ -498,6 +513,11 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
     if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
       return Device::KEY_INTERRUPTED;
     }
+    // We are already in the main menu
+    if (chosen_item == Device::kGoBack || chosen_item == Device::kGoHome) {
+      continue;
+    }
+
     // Device-specific code may take some action here. It may return one of the core actions
     // handled in the switch statement below.
     Device::BuiltinAction chosen_action =
@@ -541,6 +561,16 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
         break;
       }
 
+      case Device::WIPE_SYSTEM: {
+        save_current_log = true;
+        std::function<bool()> confirm_func = [&device]() {
+          return yes_no(device, "Wipe system?", "  THIS CAN NOT BE UNDONE!");
+        };
+        WipeSystem(ui, ui->IsTextVisible() ? confirm_func : nullptr);
+        if (!ui->IsTextVisible()) return Device::NO_ACTION;
+        break;
+      }
+
       case Device::APPLY_ADB_SIDELOAD:
       case Device::APPLY_SDCARD:
       case Device::ENTER_RESCUE: {
@@ -553,10 +583,11 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
           ui->ShowText(false);
           status = ApplyFromAdb(device, true /* rescue_mode */, &reboot_action);
         } else if (chosen_action == Device::APPLY_ADB_SIDELOAD) {
-          status = ApplyFromAdb(device, false /* rescue_mode */, &reboot_action);
+          status = ApplyFromAdb(device, false /* rescue_mode */, &reboot_action,
+                                ask_to_continue_unverified_fn);
         } else {
           adb = false;
-          status = ApplyFromSdcard(device, ui);
+          status = ApplyFromSdcard(device, ui, ask_to_continue_unverified_fn);
         }
 
         ui->Print("\nInstall from %s completed with status %d.\n", adb ? "ADB" : "SD card", status);
@@ -849,8 +880,6 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   property_list(print_property, nullptr);
   printf("\n");
 
-  ui->Print("Supported API: %d\n", kRecoveryApiVersion);
-
   int status = INSTALL_SUCCESS;
   // next_action indicates the next target to reboot into upon finishing the install. It could be
   // overridden to a different reboot target per user request.
@@ -881,7 +910,8 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
         set_retry_bootloader_message(retry_count + 1, args);
       }
 
-      status = install_package(update_package, should_wipe_cache, true, retry_count, ui);
+      status = install_package(update_package, should_wipe_cache, true, retry_count,
+                               true /* verify */, ui);
       if (status != INSTALL_SUCCESS) {
         ui->Print("Installation aborted.\n");
 
@@ -946,7 +976,8 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     if (!sideload_auto_reboot) {
       ui->ShowText(true);
     }
-    status = ApplyFromAdb(device, false /* rescue_mode */, &next_action);
+    status = ApplyFromAdb(device, false /* rescue_mode */, &next_action,
+                          !sideload_auto_reboot ? ask_to_continue_unverified_fn : nullptr);
     ui->Print("\nInstall from ADB complete (status: %d).\n", status);
     if (sideload_auto_reboot) {
       status = INSTALL_REBOOT;
@@ -961,12 +992,10 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
       status = INSTALL_ERROR;
     }
   } else if (!just_exit) {
-    // If this is an eng or userdebug build, automatically turn on the text display if no command
-    // is specified. Note that this should be called before setting the background to avoid
+    // Always show menu if no command is specified.
+    // Note that this should be called before setting the background to avoid
     // flickering the background image.
-    if (is_ro_debuggable()) {
-      ui->ShowText(true);
-    }
+    ui->ShowText(true);
     status = INSTALL_NONE;  // No command specified
     ui->SetBackground(RecoveryUI::NO_COMMAND);
   }
