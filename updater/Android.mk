@@ -24,10 +24,13 @@ tune2fs_static_libraries := \
 
 updater_common_static_libraries := \
     libapplypatch \
+    libapplypatch-mokee \
     libbootloader_message \
     libbspatch \
     libedify \
+    libotafault \
     libotautil \
+    libotautil-mokee \
     libext4_utils \
     libdm \
     libfec \
