@@ -18,6 +18,7 @@
 #define _APPLYPATCH_H
 
 #include <stdint.h>
+#include <sys/stat.h>
 
 #include <functional>
 #include <memory>
@@ -33,6 +34,7 @@ struct Value;
 struct FileContents {
   uint8_t sha1[SHA_DIGEST_LENGTH];
   std::vector<unsigned char> data;
+  struct stat st;
 };
 
 using SinkFn = std::function<size_t(const unsigned char*, size_t)>;

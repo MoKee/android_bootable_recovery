@@ -55,6 +55,11 @@ bool LoadFileContents(const std::string& filename, FileContents* file) {
     return false;
   }
 
+  if (stat(filename.c_str(), &file->st) == -1) {
+    PLOG(ERROR) << "Failed to stat \"" << filename << "\": " << strerror(errno);
+    return false;
+  }
+
   std::string data;
   if (!android::base::ReadFileToString(filename, &data)) {
     PLOG(ERROR) << "Failed to read \"" << filename << "\"";
@@ -126,6 +131,16 @@ bool SaveFileContents(const std::string& filename, const FileContents* file) {
 
   if (close(fd.release()) != 0) {
     PLOG(ERROR) << "Failed to close \"" << filename << "\"";
+    return false;
+  }
+
+  if (chmod(filename.c_str(), file->st.st_mode) != 0) {
+    PLOG(ERROR) << "Failed to chmod \"" << filename << "\": " << strerror(errno);
+    return false;
+  }
+
+  if (chown(filename.c_str(), file->st.st_uid, file->st.st_gid) != 0) {
+    PLOG(ERROR) << "Failed to chown \"" << filename << "\": " << strerror(errno);
     return false;
   }
 
