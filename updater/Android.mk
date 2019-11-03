@@ -1,4 +1,5 @@
 # Copyright 2009 The Android Open Source Project
+# Copyright 2019 The MoKee Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,9 +25,11 @@ tune2fs_static_libraries := \
 
 updater_common_static_libraries := \
     libapplypatch \
+    libapplypatch-mokee \
     libbootloader_message \
     libbspatch \
     libedify \
+    libotafault \
     libotautil \
     libext4_utils \
     libdm \
