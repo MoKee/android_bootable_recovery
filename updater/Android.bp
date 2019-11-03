@@ -21,6 +21,7 @@ cc_defaults {
 
     static_libs: [
         "libapplypatch",
+        "libapplypatch-mokee",
         "libbootloader_message",
         "libbspatch",
         "libedify",
