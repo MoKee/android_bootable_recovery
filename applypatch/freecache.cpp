@@ -21,7 +21,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef __linux__
 #include <sys/statfs.h>
+#endif
 #include <unistd.h>
 
 #include <algorithm>
@@ -135,6 +137,7 @@ static unsigned int GetLogIndex(const std::string& log_name) {
 // Returns the amount of free space (in bytes) on the filesystem containing filename, or -1 on
 // error.
 static int64_t FreeSpaceForFile(const std::string& filename) {
+#ifdef __linux__
   struct statfs sf;
   if (statfs(filename.c_str(), &sf) == -1) {
     PLOG(ERROR) << "Failed to statfs " << filename;
@@ -149,6 +152,10 @@ static int64_t FreeSpaceForFile(const std::string& filename) {
     return -1;
   }
   return free_space;
+#else
+  (void)filename;
+  return 1 * 1024 * 1024 * 1024;
+#endif
 }
 
 bool CheckAndFreeSpaceOnCache(size_t bytes) {

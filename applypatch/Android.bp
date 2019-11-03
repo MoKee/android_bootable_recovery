@@ -56,12 +56,6 @@ cc_library_static {
         "libotautil",
         "libz",
     ],
-
-    target: {
-        darwin: {
-            enabled: false,
-        },
-    },
 }
 
 cc_library_static {
@@ -197,10 +191,4 @@ cc_library_static {
         "libotautil",
         "libz",
     ],
-
-    target: {
-        darwin: {
-            enabled: false,
-        },
-    },
 }
