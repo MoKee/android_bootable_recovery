@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
+ * Copyright (C) 2019 The MoKee Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,6 +49,7 @@
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
 #include <applypatch/applypatch.h>
+#include <applypatch-mokee/applypatch.h>
 #include <bootloader_message/bootloader_message.h>
 #include <ext4_utils/wipe.h>
 #include <openssl/sha.h>
@@ -1314,6 +1316,140 @@ Value* Tune2FsFn(const char* name, State* state, const std::vector<std::unique_p
   return StringValue("t");
 }
 
+// apply_patch(src_file, tgt_file, tgt_sha1, tgt_size, patch1_sha1, patch1_blob, [...])
+//   Applies a binary patch to the src_file to produce the tgt_file. If the desired target is the
+//   same as the source, pass "-" for tgt_file. tgt_sha1 and tgt_size are the expected final SHA1
+//   hash and size of the target file. The remaining arguments must come in pairs: a SHA1 hash (a
+//   40-character hex string) and a blob. The blob is the patch to be applied when the source
+//   file's current contents have the given SHA1.
+//
+//   The patching is done in a safe manner that guarantees the target file either has the desired
+//   SHA1 hash and size, or it is untouched -- it will not be left in an unrecoverable intermediate
+//   state. If the process is interrupted during patching, the target file may be in an intermediate
+//   state; a copy exists in the cache partition so restarting the update can successfully update
+//   the file.
+Value* ApplyPatchFn(const char* name, State* state,
+                    const std::vector<std::unique_ptr<Expr>>& argv) {
+  if (argv.size() < 6 || (argv.size() % 2) == 1) {
+    return ErrorAbort(state, kArgsParsingFailure,
+                      "%s(): expected at least 6 args and an "
+                      "even number, got %zu",
+                      name, argv.size());
+  }
+
+  std::vector<std::string> args;
+  if (!ReadArgs(state, argv, &args, 0, 4)) {
+    return ErrorAbort(state, kArgsParsingFailure, "%s() Failed to parse the argument(s)", name);
+  }
+  const std::string& source_filename = args[0];
+  const std::string& target_filename = args[1];
+  const std::string& target_sha1 = args[2];
+  const std::string& target_size_str = args[3];
+
+  size_t target_size;
+  if (!android::base::ParseUint(target_size_str.c_str(), &target_size)) {
+    return ErrorAbort(state, kArgsParsingFailure, "%s(): can't parse \"%s\" as byte count", name,
+                      target_size_str.c_str());
+  }
+
+  int patchcount = (argv.size() - 4) / 2;
+  std::vector<std::unique_ptr<Value>> arg_values;
+  if (!ReadValueArgs(state, argv, &arg_values, 4, argv.size() - 4)) {
+    return nullptr;
+  }
+
+  for (int i = 0; i < patchcount; ++i) {
+    if (arg_values[i * 2]->type != Value::Type::STRING) {
+      return ErrorAbort(state, kArgsParsingFailure, "%s(): sha-1 #%d is not string", name, i * 2);
+    }
+    if (arg_values[i * 2 + 1]->type != Value::Type::BLOB) {
+      return ErrorAbort(state, kArgsParsingFailure, "%s(): patch #%d is not blob", name, i * 2 + 1);
+    }
+  }
+
+  std::vector<std::string> patch_sha_str;
+  std::vector<std::unique_ptr<Value>> patches;
+  for (int i = 0; i < patchcount; ++i) {
+    patch_sha_str.push_back(arg_values[i * 2]->data);
+    patches.push_back(std::move(arg_values[i * 2 + 1]));
+  }
+
+  int result = mokee_applypatch(source_filename.c_str(), target_filename.c_str(), target_sha1.c_str(),
+                          target_size, patch_sha_str, patches, nullptr);
+
+  return StringValue(result == 0 ? "t" : "");
+}
+
+// apply_patch_check(filename, [sha1, ...])
+//   Returns true if the contents of filename or the temporary copy in the cache partition (if
+//   present) have a SHA-1 checksum equal to one of the given sha1 values. sha1 values are
+//   specified as 40 hex digits. This function differs from sha1_check(read_file(filename),
+//   sha1 [, ...]) in that it knows to check the cache partition copy, so apply_patch_check() will
+//   succeed even if the file was corrupted by an interrupted apply_patch() update.
+Value* ApplyPatchCheckFn(const char* name, State* state,
+                         const std::vector<std::unique_ptr<Expr>>& argv) {
+  if (argv.size() < 1) {
+    return ErrorAbort(state, kArgsParsingFailure, "%s(): expected at least 1 arg, got %zu", name,
+                      argv.size());
+  }
+
+  std::vector<std::string> args;
+  if (!ReadArgs(state, argv, &args, 0, 1)) {
+    return ErrorAbort(state, kArgsParsingFailure, "%s() Failed to parse the argument(s)", name);
+  }
+  const std::string& filename = args[0];
+
+  std::vector<std::string> sha1s;
+  if (argv.size() > 1 && !ReadArgs(state, argv, &sha1s, 1, argv.size() - 1)) {
+    return ErrorAbort(state, kArgsParsingFailure, "%s() Failed to parse the argument(s)", name);
+  }
+  int result = mokee_applypatch_check(filename.c_str(), sha1s);
+
+  return StringValue(result == 0 ? "t" : "");
+}
+
+// sha1_check(data)
+//    to return the sha1 of the data (given in the format returned by
+//    read_file).
+//
+// sha1_check(data, sha1_hex, [sha1_hex, ...])
+//    returns the sha1 of the file if it matches any of the hex
+//    strings passed, or "" if it does not equal any of them.
+//
+Value* Sha1CheckFn(const char* name, State* state, const std::vector<std::unique_ptr<Expr>>& argv) {
+  if (argv.size() < 1) {
+    return ErrorAbort(state, kArgsParsingFailure, "%s() expects at least 1 arg", name);
+  }
+
+  std::vector<std::unique_ptr<Value>> args;
+  if (!ReadValueArgs(state, argv, &args)) {
+    return nullptr;
+  }
+
+  uint8_t digest[SHA_DIGEST_LENGTH];
+  SHA1(reinterpret_cast<const uint8_t*>(args[0]->data.c_str()), args[0]->data.size(), digest);
+
+  if (argv.size() == 1) {
+    return StringValue(print_sha1(digest));
+  }
+
+  for (size_t i = 1; i < argv.size(); ++i) {
+    uint8_t arg_digest[SHA_DIGEST_LENGTH];
+    if (args[i]->type != Value::Type::STRING) {
+      LOG(ERROR) << name << "(): arg " << i << " is not a string; skipping";
+    } else if (ParseSha1(args[i]->data.c_str(), arg_digest) != 0) {
+      // Warn about bad args and skip them.
+      LOG(ERROR) << name << "(): error parsing \"" << args[i]->data << "\" as sha-1; skipping";
+    } else if (memcmp(digest, arg_digest, SHA_DIGEST_LENGTH) == 0) {
+      // Found a match.
+      return args[i].release();
+    }
+  }
+
+  // Didn't match any of the hex strings; return false.
+  return StringValue("");
+}
+
 void RegisterInstallFunctions() {
   RegisterFunction("mount", MountFn);
   RegisterFunction("is_mounted", IsMountedFn);
@@ -1366,4 +1502,8 @@ void RegisterInstallFunctions() {
 
   RegisterFunction("enable_reboot", EnableRebootFn);
   RegisterFunction("tune2fs", Tune2FsFn);
+
+  RegisterFunction("apply_patch", ApplyPatchFn);
+  RegisterFunction("apply_patch_check", ApplyPatchCheckFn);
+  RegisterFunction("sha1_check", Sha1CheckFn);
 }
