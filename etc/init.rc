@@ -19,6 +19,8 @@ on init
 
     symlink /system/bin /bin
     symlink /system/etc /etc
+    rmdir /sbin
+    symlink /system/bin /sbin
 
     mount cgroup none /acct cpuacct
     mkdir /acct/uid
@@ -103,10 +105,6 @@ service fastbootd /system/bin/fastbootd
 # Restart adbd so it can run as root
 on property:sys.usb.config=adb && property:mokee.service.adb.root=1
     restart adbd
-
-# Always start adbd on userdebug and eng builds
-on fs && property:ro.debuggable=1
-    setprop sys.usb.config adb
 
 on fs && property:sys.usb.configfs=1
     mount configfs none /config
