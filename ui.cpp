@@ -88,6 +88,10 @@ RecoveryUI::RecoveryUI()
   char propval[PROPERTY_VALUE_MAX];
   property_get("ro.build.version.release", propval, "(unknown)");
   android_version_ = std::string("Android ") + propval;
+  property_get("ro.boot.slot_suffix", propval, "");
+  if (propval[0] == '_') {
+      boot_slot_ = std::string("Slot ") + &propval[1];
+  }
   property_get("ro.mk.version", propval, "(unknown)");
   mk_version_ = std::string("MoKee ") + propval;
 
