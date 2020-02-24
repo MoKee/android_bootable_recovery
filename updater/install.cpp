@@ -50,6 +50,7 @@
 #include <android-base/unique_fd.h>
 #include <applypatch/applypatch.h>
 #include <applypatch-mokee/applypatch.h>
+#include <blkid/blkid.h>
 #include <bootloader_message/bootloader_message.h>
 #include <ext4_utils/wipe.h>
 #include <openssl/sha.h>
@@ -350,7 +351,7 @@ Value* MountFn(const char* name, State* state, const std::vector<std::unique_ptr
   if (!ReadArgs(state, argv, &args)) {
     return ErrorAbort(state, kArgsParsingFailure, "%s() Failed to parse the argument(s)", name);
   }
-  const std::string& fs_type = args[0];
+  std::string fs_type = args[0];
   const std::string& partition_type = args[1];
   const std::string& location = args[2];
   const std::string& mount_point = args[3];
@@ -389,6 +390,16 @@ Value* MountFn(const char* name, State* state, const std::vector<std::unique_ptr
       freecon(secontext);
       setfscreatecon(nullptr);
     }
+  }
+
+  char* detected_fs_type = blkid_get_tag_value(NULL, "TYPE", location.c_str());
+  if (detected_fs_type) {
+    uiPrintf(state, "detected filesystem %s for %s\n", detected_fs_type, location.c_str());
+    fs_type = detected_fs_type;
+    free(detected_fs_type);
+  } else {
+    uiPrintf(state, "could not detect filesystem for %s, assuming %s\n", location.c_str(),
+             fs_type.c_str());
   }
 
   if (mount(location.c_str(), mount_point.c_str(), fs_type.c_str(),
