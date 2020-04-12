@@ -24,8 +24,7 @@
 #include <string>
 #include <vector>
 
-// Forward declaration to avoid including "ui.h".
-class RecoveryUI;
+#include "ui.h"
 
 class Device {
  public:
@@ -38,6 +37,7 @@ class Device {
   static constexpr const int kRefresh = -7;
   static constexpr const int kScrollUp = -8;
   static constexpr const int kScrollDown = -9;
+  static constexpr const int kDoSideload = -10;
 
   // ENTER vs REBOOT: The latter will trigger a reboot that goes through bootloader, which allows
   // using a new bootloader / recovery image if applicable. For example, REBOOT_RESCUE goes from
@@ -46,9 +46,9 @@ class Device {
   enum BuiltinAction {
     NO_ACTION = 0,
     REBOOT = 1,
-    APPLY_SDCARD = 2,
+    APPLY_UPDATE = 2,
     // APPLY_CACHE was 3.
-    APPLY_ADB_SIDELOAD = 4,
+    // APPLY_ADB_SIDELOAD was 4.
     WIPE_DATA = 5,
     WIPE_CACHE = 6,
     REBOOT_BOOTLOADER = 7,
@@ -66,7 +66,6 @@ class Device {
     REBOOT_RESCUE = 19,
     WIPE_SYSTEM = 100,
     MENU_BASE = 200,
-    MENU_UPDATE = 201,
     MENU_WIPE = 202,
     MENU_ADVANCED = 203,
   };
@@ -139,6 +138,10 @@ class Device {
 
   virtual bool PostWipeData() {
     return true;
+  }
+
+  virtual void handleVolumeChanged() {
+    ui_->onVolumeChanged();
   }
 
  private:
