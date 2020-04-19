@@ -38,21 +38,6 @@ namespace android {
 namespace volmgr {
 namespace exfat {
 
-static const char* kFsckPath = "/sbin/fsck.exfat";
-
-bool IsSupported() {
-    return access(kFsckPath, X_OK) == 0 && IsFilesystemSupported("exfat");
-}
-
-status_t Check(const std::string& source) {
-    std::vector<std::string> cmd;
-    cmd.push_back(kFsckPath);
-    cmd.push_back(source);
-
-    // Exfat devices are currently always untrusted
-    return ForkExecvp(cmd, sFsckUntrustedContext);
-}
-
 status_t Mount(const std::string& source, const std::string& target, int ownerUid, int ownerGid,
                int permMask) {
     int mountFlags = MS_NODEV | MS_NOSUID | MS_DIRSYNC | MS_NOATIME | MS_NOEXEC;

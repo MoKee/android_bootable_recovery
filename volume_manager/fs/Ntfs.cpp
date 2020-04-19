@@ -32,23 +32,7 @@ namespace android {
 namespace volmgr {
 namespace ntfs {
 
-static const char* kFsckPath = "/sbin/fsck.ntfs";
 static const char* kMountPath = "/sbin/mount.ntfs";
-
-bool IsSupported() {
-    return access(kFsckPath, X_OK) == 0 && access(kMountPath, X_OK) == 0 &&
-           IsFilesystemSupported("ntfs");
-}
-
-status_t Check(const std::string& source) {
-    std::vector<std::string> cmd;
-    cmd.push_back(kFsckPath);
-    cmd.push_back("-n");
-    cmd.push_back(source);
-
-    // Ntfs devices are currently always untrusted
-    return ForkExecvp(cmd, sFsckUntrustedContext);
-}
 
 status_t Mount(const std::string& source, const std::string& target, bool ro, bool remount,
                bool executable, int ownerUid, int ownerGid, int permMask) {
