@@ -581,7 +581,10 @@ void ScreenRecoveryUI::draw_foreground_locked() {
 void ScreenRecoveryUI::SetColor(UIElement e) const {
   switch (e) {
     case UIElement::INFO:
-      gr_color(249, 194, 0, 255);
+      if (fastbootd_logo_enabled_)
+        gr_color(0xfd, 0xd8, 0x35, 255);
+      else
+        gr_color(0xf8, 0x90, 0xff, 255);
       break;
     case UIElement::HEADER:
       if (fastbootd_logo_enabled_)
@@ -800,14 +803,17 @@ void ScreenRecoveryUI::draw_screen_locked() {
 
   // clang-format off
   static std::vector<std::string> REGULAR_HELP{
-    "Use volume up/down and power.",
+    "Use the volume up/down keys to navigate.",
+    "Use the power key to select.",
   };
   static std::vector<std::string> LONG_PRESS_HELP{
     "Any button cycles highlight.",
     "Long-press activates.",
   };
+  static const std::vector<std::string> NO_HELP = {};
   // clang-format on
-  draw_menu_and_text_buffer_locked(HasThreeButtons() ? REGULAR_HELP : LONG_PRESS_HELP);
+  draw_menu_and_text_buffer_locked(
+      HasTouchScreen() ? NO_HELP : HasThreeButtons() ? REGULAR_HELP : LONG_PRESS_HELP);
 }
 
 // Draws the menu and text buffer on the screen. Should only be called with updateMutex locked.
@@ -816,37 +822,35 @@ void ScreenRecoveryUI::draw_menu_and_text_buffer_locked(
   int y = margin_height_;
 
   if (menu_) {
-    int x = margin_width_ + kMenuIndent;
-
-    SetColor(UIElement::INFO);
-
     auto& logo = fastbootd_logo_enabled_ ? fastbootd_logo_ : mokee_logo_;
-    if (logo && back_icon_) {
-      auto logo_width = gr_get_width(logo.get());
-      auto logo_height = gr_get_height(logo.get());
-      auto centered_x = ScreenWidth() / 2 - logo_width / 2;
-      DrawSurface(logo.get(), 0, 0, logo_width, logo_height, centered_x, y);
-      y += logo_height;
+    auto logo_width = gr_get_width(logo.get());
+    auto logo_height = gr_get_height(logo.get());
+    auto centered_x = ScreenWidth() / 2 - logo_width / 2;
+    DrawSurface(logo.get(), 0, 0, logo_width, logo_height, centered_x, y);
+    y += logo_height;
 
-      if (!menu_->IsMain()) {
-        auto icon_w = gr_get_width(back_icon_.get());
-        auto icon_h = gr_get_height(back_icon_.get());
-        auto icon_x = centered_x / 2 - icon_w / 2;
-        auto icon_y = y - logo_height / 2 - icon_h / 2;
-        gr_blit(back_icon_sel_ && menu_->selection() == -1 ? back_icon_sel_.get() : back_icon_.get(),
-                0, 0, icon_w, icon_h, icon_x, icon_y);
-      }
-      y += MenuItemPadding();
-    } else {
-      for (size_t i = 0; i < title_lines_.size(); i++) {
-        y += DrawTextLine(x, y, title_lines_[i], i == 0);
-      }
-      y += DrawTextLines(x, y, help_message);
+    if (!menu_->IsMain()) {
+      auto icon_w = gr_get_width(back_icon_.get());
+      auto icon_h = gr_get_height(back_icon_.get());
+      auto icon_x = centered_x / 2 - icon_w / 2;
+      auto icon_y = y - logo_height / 2 - icon_h / 2;
+      gr_blit(back_icon_sel_ && menu_->selection() == -1 ? back_icon_sel_.get() : back_icon_.get(),
+              0, 0, icon_w, icon_h, icon_x, icon_y);
     }
 
+    int x = margin_width_ + kMenuIndent;
+    if (!title_lines_.empty()) {
+      SetColor(UIElement::INFO);
+      y += DrawTextLines(x, y, title_lines_);
+    }
     y += menu_->DrawHeader(x, y);
     menu_start_y_ = y + 12; // Skip horizontal rule and some margin
     y += menu_->DrawItems(x, y, ScreenWidth(), IsLongPress());
+    if (!help_message.empty()) {
+      y += MenuItemPadding();
+      SetColor(UIElement::INFO);
+      y += DrawTextLines(x, y, help_message);
+    }
   }
 
   // Display from the bottom up, until we hit the top of the screen, the bottom of the menu, or
@@ -1306,9 +1310,8 @@ std::unique_ptr<Menu> ScreenRecoveryUI::CreateMenu(const std::vector<std::string
                                                    size_t initial_selection) const {
   int menu_char_width = MenuCharWidth();
   int menu_char_height = MenuCharHeight();
-  int menu_item_padding = MenuItemPadding();
-  int menu_rows = (ScreenHeight() - margin_height_*2 - gr_get_height(mokee_logo_.get()))
-                  / (menu_char_height + 2 * menu_item_padding) - text_headers.size();
+  int menu_rows = (ScreenHeight() - margin_height_*2 - gr_get_height(mokee_logo_.get())
+                  - menu_char_height*title_lines_.size()) / MenuItemHeight() - text_headers.size();
   int menu_cols = (ScreenWidth() - margin_width_*2 - kMenuIndent) / menu_char_width;
   return std::make_unique<TextMenu>(scrollable_menu_, menu_rows, menu_cols, text_headers, text_items,
                                     initial_selection, menu_char_height, *menu_draw_funcs_);
