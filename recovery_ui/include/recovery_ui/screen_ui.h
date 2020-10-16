@@ -149,7 +149,7 @@ class TextMenu : public Menu {
   size_t MenuEnd() const;
 
   // Menu example:
-  // info:                           Lineage Recovery
+  // info:                           MoKee Recovery
   //                                 ....
   // help messages:                  Swipe up/down to move
   //                                 Swipe left/right to select
@@ -458,7 +458,7 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   std::unique_ptr<GRSurface> wipe_data_confirmation_text_;
   std::unique_ptr<GRSurface> wipe_data_menu_header_text_;
 
-  std::unique_ptr<GRSurface> lineage_logo_;
+  std::unique_ptr<GRSurface> mokee_logo_;
   std::unique_ptr<GRSurface> back_icon_;
   std::unique_ptr<GRSurface> back_icon_sel_;
   std::unique_ptr<GRSurface> fastbootd_logo_;
