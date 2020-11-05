@@ -53,11 +53,15 @@
 #include "otautil/paths.h"
 #include "otautil/sysutil.h"
 #include "private/setup_commands.h"
+#include "recovery_ui/device.h"
 #include "recovery_ui/ui.h"
 #include "recovery_utils/roots.h"
 #include "recovery_utils/thermalutil.h"
 
 using namespace std::chrono_literals;
+
+bool ask_to_continue_unverified(Device* device);
+bool ask_to_continue_downgrade(Device* device);
 
 static constexpr int kRecoveryApiVersion = 3;
 // We define RECOVERY_API_VERSION in Android.mk, which will be picked up by build system and packed
@@ -138,7 +142,8 @@ static void ReadSourceTargetBuild(const std::map<std::string, std::string>& meta
 // Checks the build version, fingerprint and timestamp in the metadata of the A/B package.
 // Downgrading is not allowed unless explicitly enabled in the package and only for
 // incremental packages.
-static bool CheckAbSpecificMetadata(const std::map<std::string, std::string>& metadata) {
+static bool CheckAbSpecificMetadata(const std::map<std::string, std::string>& metadata,
+                                    RecoveryUI* ui) {
   // Incremental updates should match the current build.
   auto device_pre_build = android::base::GetProperty("ro.build.version.incremental", "");
   auto pkg_pre_build = get_value(metadata, "pre-build-incremental");
@@ -157,6 +162,7 @@ static bool CheckAbSpecificMetadata(const std::map<std::string, std::string>& me
   }
 
   // Check for downgrade version.
+  bool undeclared_downgrade = false;
   int64_t build_timestamp =
       android::base::GetIntProperty("ro.build.date.utc", std::numeric_limits<int64_t>::max());
   int64_t pkg_post_timestamp = 0;
@@ -171,18 +177,23 @@ static bool CheckAbSpecificMetadata(const std::map<std::string, std::string>& me
                     "newer than timestamp "
                  << build_timestamp << " but package has timestamp " << pkg_post_timestamp
                  << " and downgrade not allowed.";
-      return false;
-    }
-    if (pkg_pre_build_fingerprint.empty()) {
+      undeclared_downgrade = true;
+    } else if (pkg_pre_build_fingerprint.empty()) {
       LOG(ERROR) << "Downgrade package must have a pre-build version set, not allowed.";
-      return false;
+      undeclared_downgrade = true;
     }
+  }
+
+  if (undeclared_downgrade &&
+      !(ui->IsTextVisible() && ask_to_continue_downgrade(ui->GetDevice()))) {
+    return false;
   }
 
   return true;
 }
 
-bool CheckPackageMetadata(const std::map<std::string, std::string>& metadata, OtaType ota_type) {
+bool CheckPackageMetadata(const std::map<std::string, std::string>& metadata, OtaType ota_type,
+                          RecoveryUI* ui) {
   auto package_ota_type = get_value(metadata, "ota-type");
   auto expected_ota_type = OtaTypeToString(ota_type);
   if (ota_type != OtaType::AB && ota_type != OtaType::BRICK) {
@@ -232,7 +243,7 @@ bool CheckPackageMetadata(const std::map<std::string, std::string>& metadata, Ot
   }
 
   if (ota_type == OtaType::AB) {
-    return CheckAbSpecificMetadata(metadata);
+    return CheckAbSpecificMetadata(metadata, ui);
   }
 
   return true;
@@ -351,7 +362,7 @@ static InstallResult TryUpdateBinary(Package* package, bool* wipe_cache,
   // Package does not declare itself as an A/B package, but device only supports A/B;
   //   still calls CheckPackageMetadata to get a meaningful error message.
   if (package_is_ab || device_only_supports_ab) {
-    if (!CheckPackageMetadata(metadata, OtaType::AB)) {
+    if (!CheckPackageMetadata(metadata, OtaType::AB, ui)) {
       log_buffer->push_back(android::base::StringPrintf("error: %d", kUpdateBinaryCommandFailure));
       return INSTALL_ERROR;
     }
@@ -532,7 +543,9 @@ static InstallResult VerifyAndInstallPackage(Package* package, bool* wipe_cache,
   // Verify package.
   if (!verify_package(package, ui)) {
     log_buffer->push_back(android::base::StringPrintf("error: %d", kZipVerificationFailure));
-    return INSTALL_CORRUPT;
+    if (!ui->IsTextVisible() || !ask_to_continue_unverified(ui->GetDevice())) {
+        return INSTALL_CORRUPT;
+    }
   }
 
   // Verify and install the contents of the package.
